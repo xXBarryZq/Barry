@@ -1,0 +1,2 @@
+# Preserve Windows launchers in source archives, including GitHub Download ZIP.
+*.cmd -text whitespace=cr-at-eol

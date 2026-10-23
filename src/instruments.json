@@ -1,0 +1,138 @@
+[
+  {
+    "id": "SH.510300",
+    "symbol": "510300",
+    "name": "沪深300 ETF",
+    "market": "cn",
+    "kind": "ETF",
+    "currency": "CNY",
+    "base": 4.12,
+    "tick": 0.001,
+    "rule": "普通股票 ETF 通常 T+1；具体以基金交易规则为准"
+  },
+  {
+    "id": "SZ.159915",
+    "symbol": "159915",
+    "name": "创业板 ETF",
+    "market": "cn",
+    "kind": "ETF",
+    "currency": "CNY",
+    "base": 2.16,
+    "tick": 0.001,
+    "rule": "普通股票 ETF 通常 T+1；具体以基金交易规则为准"
+  },
+  {
+    "id": "SH.600519",
+    "symbol": "600519",
+    "name": "贵州茅台",
+    "market": "cn",
+    "kind": "股票",
+    "currency": "CNY",
+    "base": 1420,
+    "tick": 0.01,
+    "rule": "A 股股票 T+1；买入后通常不能当日卖出"
+  },
+  {
+    "id": "SZ.300750",
+    "symbol": "300750",
+    "name": "宁德时代",
+    "market": "cn",
+    "kind": "股票",
+    "currency": "CNY",
+    "base": 265,
+    "tick": 0.01,
+    "rule": "创业板股票 T+1；注意涨跌幅限制"
+  },
+  {
+    "id": "SHFE.rb",
+    "symbol": "RB 主连",
+    "name": "螺纹钢",
+    "market": "futures",
+    "kind": "期货",
+    "currency": "CNY",
+    "base": 3250,
+    "tick": 1,
+    "continuous": true,
+    "rule": "主连仅用于观察；交易须选择实际合约，注意保证金与交割日"
+  },
+  {
+    "id": "SHFE.au",
+    "symbol": "AU 主连",
+    "name": "沪金",
+    "market": "futures",
+    "kind": "期货",
+    "currency": "CNY",
+    "base": 860,
+    "tick": 0.02,
+    "continuous": true,
+    "rule": "主连仅用于观察；期货支持多空，杠杆可放大亏损"
+  },
+  {
+    "id": "DCE.i",
+    "symbol": "I 主连",
+    "name": "铁矿石",
+    "market": "futures",
+    "kind": "期货",
+    "currency": "CNY",
+    "base": 780,
+    "tick": 0.5,
+    "continuous": true,
+    "rule": "主连仅用于观察；注意换月、保证金和交易权限"
+  },
+  {
+    "id": "CZCE.MA",
+    "symbol": "MA 主连",
+    "name": "甲醇",
+    "market": "futures",
+    "kind": "期货",
+    "currency": "CNY",
+    "base": 2420,
+    "tick": 1,
+    "continuous": true,
+    "rule": "主连仅用于观察；交易须选择实际合约，日夜盘时段不同"
+  },
+  {
+    "id": "US.AAPL",
+    "symbol": "AAPL",
+    "name": "Apple",
+    "market": "us",
+    "kind": "股票",
+    "currency": "USD",
+    "base": 225,
+    "tick": 0.01,
+    "rule": "美国股票，美元计价；注意盘前盘后流动性及账户交易限制"
+  },
+  {
+    "id": "US.NVDA",
+    "symbol": "NVDA",
+    "name": "NVIDIA",
+    "market": "us",
+    "kind": "股票",
+    "currency": "USD",
+    "base": 140,
+    "tick": 0.01,
+    "rule": "美国股票，美元计价；交易权限以券商账户为准"
+  },
+  {
+    "id": "US.SPY",
+    "symbol": "SPY",
+    "name": "S&P 500 ETF",
+    "market": "us",
+    "kind": "ETF",
+    "currency": "USD",
+    "base": 590,
+    "tick": 0.01,
+    "rule": "美国 ETF，美元计价；注意汇率与隔夜风险"
+  },
+  {
+    "id": "US.QQQ",
+    "symbol": "QQQ",
+    "name": "Nasdaq 100 ETF",
+    "market": "us",
+    "kind": "ETF",
+    "currency": "USD",
+    "base": 510,
+    "tick": 0.01,
+    "rule": "美国 ETF，美元计价；注意汇率与隔夜风险"
+  }
+]
