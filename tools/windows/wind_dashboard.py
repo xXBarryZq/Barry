@@ -1,163 +1,19 @@
 """Local-only Wind dashboard. Python standard library + terminal-provided WindPy."""
 
 import argparse
-import copy
-import importlib
+import os
 import json
 import mimetypes
 import sys
 import threading
-import time
 import webbrowser
-from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, parse_qs
 
-from wind_data import CHINA, WIND_CODES, bars_from_result, merge_bars, quote_from_result
+from watchlist import WindDashboard, DEFAULT_SYMBOLS
 
 ROOT = Path(__file__).resolve().parents[2]
-CATALOG = json.loads((ROOT / 'src' / 'instruments.json').read_text(encoding='utf-8'))
-DEFAULT_SYMBOLS = ('SH.510300', 'SH.600519', 'SHFE.rb')
-
-
-class WindDashboard:
-    def __init__(self, symbols=DEFAULT_SYMBOLS, poll_seconds=5):
-        if not symbols or any(symbol not in WIND_CODES for symbol in symbols):
-            raise ValueError('品种必须来自预置 Wind 代码表')
-        self.symbols = tuple(dict.fromkeys(symbols))
-        self.poll_seconds = max(3, poll_seconds)
-        self.stop = threading.Event()
-        self.lock = threading.Lock()
-        self.connected = False
-        self.message = '正在连接本机 Wind……'
-        self.states = {item['id']: {
-            'quote': None, 'bars': [], 'quoteIssue': '', 'historyIssue': '', 'missingBars': 0,
-        } for item in CATALOG}
-
-    def set_status(self, connected, message):
-        with self.lock:
-            self.connected, self.message = connected, message
-
-    def snapshot(self):
-        now = int(time.time() * 1000)
-        with self.lock:
-            states = copy.deepcopy(self.states)
-            connected, message = self.connected, self.message
-        items = []
-        for original in CATALOG:
-            item = {key: value for key, value in original.items() if key != 'base'}
-            state = states[item['id']]
-            if item['market'] == 'us':
-                issue = '美股行情待接入富途；此处不生成替代价格。'
-            elif item['id'] not in self.symbols:
-                issue = '此品种尚未订阅 Wind 行情。'
-            elif not connected:
-                issue = message
-            else:
-                issue = state['quoteIssue'] or state['historyIssue']
-            item.update(quote=state['quote'], bars=state['bars'], dataIssue=issue, missingBars=state['missingBars'])
-            items.append(item)
-        return {'mode': 'live', 'provider': 'wind-local', 'computeStrategies': True,
-                'source': 'Wind 本机接口 · 5 秒轮询 · 非逐笔推送', 'serverTime': now,
-                'status': {'connected': connected, 'message': message}, 'instruments': items}
-
-    @staticmethod
-    def index(result, code):
-        codes = [str(value).upper() for value in (getattr(result, 'Codes', None) or [])]
-        return codes.index(code.upper())
-
-    def refresh_quotes(self, api, date_supported):
-        codes = ','.join(WIND_CODES[symbol] for symbol in self.symbols)
-        quotes = api.wsq(codes, 'rt_last,rt_pre_close,rt_vol,rt_time')
-        received = int(time.time() * 1000)
-        if getattr(quotes, 'ErrorCode', None) != 0:
-            with self.lock:
-                for symbol in self.symbols:
-                    self.states[symbol]['quoteIssue'] = 'Wind 报价请求失败，错误码 ' + str(getattr(quotes, 'ErrorCode', '未知'))
-            return date_supported
-        dates = None
-        if date_supported is not False:
-            dates = api.wsq(codes, 'rt_date')
-            date_supported = getattr(dates, 'ErrorCode', None) == 0
-        for symbol in self.symbols:
-            code = WIND_CODES[symbol]
-            try:
-                index = self.index(quotes, code)
-                date_index = self.index(dates, code) if date_supported else 0
-                quote, issue = quote_from_result(quotes, dates, received, index, date_index)
-            except (ValueError, TypeError, IndexError):
-                with self.lock:
-                    self.states[symbol]['quoteIssue'] = 'Wind 返回的该品种报价字段缺失；请核对数据权限或代码。'
-                continue
-            with self.lock:
-                state = self.states[symbol]
-                # Source-time regressions must not replace a later known quote.
-                previous = state['quote']
-                if previous and previous['timestamp'] is not None and quote['timestamp'] is not None and quote['timestamp'] < previous['timestamp']:
-                    state['quoteIssue'] = 'Wind 源行情时间倒退，已保留上次报价并暂停策略。'
-                    continue
-                state['quote'], state['quoteIssue'] = quote, issue
-        return date_supported
-
-    def refresh_history(self, api, symbol):
-        end = datetime.now(CHINA).replace(tzinfo=None)
-        with self.lock:
-            existing = copy.deepcopy(self.states[symbol]['bars'])
-        # Bootstrap only once; then overlap a few minutes to capture corrections.
-        if existing:
-            begin = datetime.fromtimestamp(existing[-1]['time'] / 1000, CHINA).replace(tzinfo=None) - timedelta(minutes=5)
-        else:
-            begin = end - timedelta(days=3)
-        result = api.wsi(WIND_CODES[symbol], 'open,high,low,close,volume', begin, end, 'BarSize=1')
-        try:
-            bars, seen, missing = bars_from_result(result, int(time.time() * 1000))
-        except (ValueError, TypeError, IndexError):
-            with self.lock:
-                self.states[symbol]['historyIssue'] = 'Wind 分钟 OHLCV 查询失败，错误码 ' + str(getattr(result, 'ErrorCode', '未知')) + '；请核对分钟权限。'
-            return False
-        with self.lock:
-            state = self.states[symbol]
-            state['bars'] = merge_bars(existing, bars, seen)
-            state['missingBars'] = missing
-            state['historyIssue'] = ''
-        return True
-
-    def run(self):
-        api = None
-        try:
-            api = importlib.import_module('WindPy').w
-            result = api.start()
-            if getattr(result, 'ErrorCode', None) != 0 or not api.isconnected():
-                self.set_status(False, 'Wind 连接失败。请登录本机 Wind，并使用同一个 Python 重新启动。')
-                return
-            self.set_status(True, '本机 Wind 已连接；报价日期未核实或分钟数据不足的品种会暂停策略。')
-            print('Wind 已连接，正在读取预置品种的行情和分钟数据。', flush=True)
-            due = {symbol: 0 for symbol in self.symbols}
-            date_supported = None
-            while not self.stop.is_set():
-                if not api.isconnected():
-                    self.set_status(False, 'Wind 连接已断开。请重新登录 Wind 后重启本工具。')
-                    return
-                date_supported = self.refresh_quotes(api, date_supported)
-                for symbol in self.symbols:
-                    if self.stop.is_set():
-                        break
-                    if time.monotonic() >= due[symbol]:
-                        success = self.refresh_history(api, symbol)
-                        due[symbol] = time.monotonic() + (60 if success else 300)
-                self.stop.wait(self.poll_seconds)
-        except ImportError:
-            self.set_status(False, '当前 Python 找不到 WindPy，请使用已验证连接成功的 Python 启动本工具。')
-        except Exception as error:
-            # Do not print vendor exception text: it may contain local account details.
-            self.set_status(False, 'Wind 接口异常（' + type(error).__name__ + '），请查看客户端连接状态后重启。')
-        finally:
-            if api is not None:
-                try:
-                    api.stop()
-                except Exception:
-                    pass
 
 
 FILES = {'/': ROOT / 'public/index.html', '/app.js': ROOT / 'public/app.js',
@@ -182,12 +38,26 @@ def make_server(dashboard, port):
                 self.send_header('Content-Length', str(length))
             self.end_headers()
 
+        def json(self, status, data):
+            body = json.dumps(data, ensure_ascii=False, allow_nan=False).encode('utf-8')
+            self.write_headers(status, 'application/json; charset=utf-8', len(body))
+            self.wfile.write(body)
+
+        def local_request(self):
+            hosts = {'127.0.0.1:' + str(self.server.server_port), 'localhost:' + str(self.server.server_port)}
+            origin = self.headers.get('Origin')
+            return self.headers.get('Host') in hosts and (origin is None or origin in {'http://' + host for host in hosts})
+
         def do_GET(self):
             # Restrict DNS rebinding and accidental access through a foreign Host.
-            if self.headers.get('Host') not in {'127.0.0.1:' + str(self.server.server_port), 'localhost:' + str(self.server.server_port)}:
+            if not self.local_request():
                 self.write_headers(403, 'text/plain; charset=utf-8', 0)
                 return
             path = urlsplit(self.path).path
+            if path == '/api/search':
+                query = parse_qs(urlsplit(self.path).query).get('q',[''])[0]
+                self.json(200, dashboard.search(query))
+                return
             if path == '/api/events':
                 self.connection.settimeout(15)
                 self.write_headers(200, 'text/event-stream; charset=utf-8')
@@ -224,6 +94,54 @@ def make_server(dashboard, port):
                 return
             self.write_headers(404, 'text/plain', 0)
 
+        def do_POST(self):
+            self.connection.settimeout(15)
+            if not self.local_request():
+                self.json(403, {'error':'仅允许本机页面修改自选。'})
+                self.close_connection = True
+                return
+            if not self.headers.get('Content-Type','').startswith('application/json'):
+                self.json(415, {'error':'仅接受 JSON 请求。'})
+                self.close_connection = True
+                return
+            try:
+                length = int(self.headers.get('Content-Length','0'))
+                if length < 1 or length > 2_000_000:
+                    self.json(413, {'error':'请求大小无效。'})
+                    self.close_connection = True
+                    return
+                data = json.loads(self.rfile.read(length).decode('utf-8'))
+                if not isinstance(data,dict):
+                    raise ValueError('请求必须为对象')
+                path = urlsplit(self.path).path
+                if path == '/api/watchlist':
+                    value = data.get('code')
+                    if not isinstance(value,str) or len(value)>80:
+                        raise ValueError('请输入证券代码')
+                    item = dashboard.add_watch(value)
+                    self.json(200, {'instrument':item})
+                elif path == '/api/watchlist/remove':
+                    value = data.get('id')
+                    if not isinstance(value,str):
+                        raise ValueError('品种 id 无效')
+                    dashboard.remove_watch(value)
+                    self.json(200, {'removed':value})
+                elif path == '/api/settings':
+                    self.json(200, {'settings':dashboard.set_zones(data)})
+                elif path == '/api/catalog':
+                    text = data.get('csv')
+                    if not isinstance(text,str):
+                        raise ValueError('目录内容无效')
+                    self.json(200, {'imported':dashboard.import_directory(text)})
+                else:
+                    self.json(404, {'error':'接口不存在'})
+            except ValueError as error:
+                self.json(400, {'error':str(error)})
+            except (TypeError,KeyError):
+                self.json(400, {'error':'请求字段无效。'})
+            except OSError:
+                self.json(500, {'error':'本机自选配置无法保存，请检查文件夹权限。'})
+
     server = ThreadingHTTPServer(('127.0.0.1', port), Handler)
     server.daemon_threads = True
     return server
@@ -237,10 +155,16 @@ def main():
     parser.add_argument('--port', type=int, default=8765)
     parser.add_argument('--no-browser', action='store_true')
     parser.add_argument('--symbols', default=','.join(DEFAULT_SYMBOLS), help='使用 src/instruments.json 中的 id，以英文逗号分隔')
+    parser.add_argument('--state-file', help='覆盖本机自选配置路径')
     args = parser.parse_args()
     if args.port < 1 or args.port > 65535:
         parser.error('端口必须为 1–65535')
-    dashboard = WindDashboard(tuple(value.strip() for value in args.symbols.split(',')))
+    state_file = args.state_file or str(Path(os.environ.get('LOCALAPPDATA',Path.home()/'AppData/Local')) / 'BarryMarketWatch/settings.json')
+    try:
+        dashboard = WindDashboard(tuple(value.strip() for value in args.symbols.split(',')), state_path=state_file)
+    except (ValueError,KeyError,OSError):
+        print('本机自选配置无法读取，请检查配置文件；程序不会覆盖原文件。')
+        return 4
     try:
         server = make_server(dashboard, args.port)
     except OSError:
@@ -250,7 +174,7 @@ def main():
     worker = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': 0.5}, daemon=True)
     worker.start()
     print('Barry 本机行情看板已启动，端口 ' + str(args.port) + '。请保持此窗口和 Wind 客户端打开。', flush=True)
-    print('按 Ctrl+C 停止。美股数据暂待接入富途；不会生成模拟替代价格。', flush=True)
+    print('按 Ctrl+C 停止。美股使用 Wind；时区确认前显示价格但暂停买卖标记。', flush=True)
     if not args.no_browser:
         webbrowser.open('http://127.0.0.1:' + str(args.port))
     try:

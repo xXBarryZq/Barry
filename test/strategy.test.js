@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { analyze, MINUTE, STALE_AFTER } from '../src/strategy.js';
+import { analyze, actionHistory, MINUTE, STALE_AFTER } from '../src/strategy.js';
 import { instruments } from '../src/instruments.js';
 import { Feed, validateUpdate } from '../src/feed.js';
 
@@ -79,6 +79,35 @@ test('a strategy recovers only after enough valid contiguous minute bars', () =>
   assert.ok(result.levels);
   const tail = bars.slice(11);
   assert.deepEqual(result, analyze(instrument, quote, tail, now));
+});
+
+test('a trend alone never emits a buy label; breakout and volume must both confirm', () => {
+  assert.equal(analyze(instrument,quote,bars,now).action,null);
+  const breakout=bars.map((bar,index)=>index===bars.length-1?{...bar,volume:200}:bar);
+  assert.equal(analyze(instrument,quote,breakout,now).action.type,'buy');
+  assert.equal(analyze(instrument,{...quote,price:breakout.at(-2).close},breakout,now).action,null);
+  const noBreakout=breakout.map((bar,index)=>index===breakout.length-1?{...bar,close:bar.open}:bar);
+  assert.equal(analyze(instrument,quote,noBreakout,now).action,null);
+  const badVolume=breakout.map((bar,index)=>index===breakout.length-1?{...bar,volume:NaN}:bar);
+  assert.equal(analyze(instrument,quote,badVolume,now).action,null);
+});
+
+test('sell labels require a downside break and volume and describe existing positions', () => {
+  const descending=bars.map((bar,index)=>({...bar,open:210-bar.open,high:210-bar.low,low:210-bar.high,close:210-bar.close,volume:index===bars.length-1?200:100}));
+  const action=analyze(instrument,quote,descending,now).action;
+  assert.equal(action.type,'sell');
+  assert.match(action.note,/已有持仓/);
+  assert.equal(analyze(instrument,{...quote,price:descending.at(-2).close},descending,now).action,null);
+  assert.equal(analyze(instrument,{...quote,timestamp:now-STALE_AFTER-1},descending,now).action,null);
+});
+
+test('historical markers cannot see unclosed future candles or bridge missing minutes', () => {
+  const breakout=bars.map((bar,index)=>index===bars.length-1?{...bar,volume:200}:bar);
+  const markers=actionHistory(instrument,breakout,now);
+  assert.equal(markers.at(-1).type,'buy');
+  const future={...breakout.at(-1),time:Math.floor(now/MINUTE)*MINUTE,close:500,high:501,volume:99999};
+  assert.deepEqual(actionHistory(instrument,[...breakout,future],now),markers);
+  assert.equal(analyze(instrument,quote,breakout.filter((_,i)=>i!==breakout.length-2),now).action,null);
 });
 
 test('validation rejects impossible prices, future timestamps and unfinished candles', () => {

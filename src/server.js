@@ -36,6 +36,27 @@ export function createMarketServer({ mode = 'demo', token = '', feed = new Feed(
       return;
     }
     if (request.method === 'GET' && path === '/api/snapshot') { send(response, 200, feed.snapshot()); return; }
+    if (request.method === 'GET' && path === '/api/search') { send(response,200,feed.search(new URL(request.url,'http://localhost').searchParams.get('q') || '')); return; }
+    if (request.method === 'POST' && ['/api/watchlist','/api/watchlist/remove'].includes(path)) {
+      const origin = request.headers.origin;
+      if (origin && origin !== `http://${request.headers.host}`) { send(response,403,{error:'仅允许同源页面修改自选。'}); return; }
+      if (mode !== 'demo') { send(response,409,{error:'请在 Wind 本机版管理真实行情自选。'}); return; }
+      if (!request.headers['content-type']?.startsWith('application/json')) { send(response,415,{error:'仅接受 JSON 请求'}); return; }
+      try {
+        let body='';
+        for await (const chunk of request) { body+=chunk; if(Buffer.byteLength(body)>32768) {send(response,413,{error:'请求过大'});return;} }
+        const data=JSON.parse(body);
+        if (path.endsWith('/remove')) {
+          if(typeof data.id!=='string')throw Error('品种 id 无效');
+          feed.remove(data.id); send(response,200,{removed:data.id});
+        } else {
+          if(typeof data.code!=='string')throw Error('证券代码无效');
+          send(response,200,{instrument:feed.add(data.code)});
+        }
+        broadcast();
+      } catch(error) { if(!response.headersSent)send(response,400,{error:error.message}); }
+      return;
+    }
     if (request.method === 'GET' && path === '/api/events') {
       if (clients.size >= 20) { send(response, 503, { error: '连接数量已达上限' }); return; }
       response.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });

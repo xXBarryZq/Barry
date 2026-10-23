@@ -59,3 +59,19 @@ test('live mode without a token does not accept quotes or fabricate data', async
     assert.equal(health.freshQuotes, 0);
   });
 });
+
+test('demo search adds a security outside the initial list and can remove it', async()=>{
+  await running({mode:'demo'},async base=>{
+    const search=await (await fetch(`${base}/api/search?q=${encodeURIComponent('中国平安')}`)).json();
+    assert.equal(search.results[0].id,'SH.601318');
+    assert.equal(search.results[0].added,false);
+    const post=(path,body,origin)=>fetch(base+path,{method:'POST',headers:{'Content-Type':'application/json',...(origin?{Origin:origin}:{})},body:JSON.stringify(body)});
+    assert.equal((await post('/api/watchlist',{code:'SH.601318'},'http://attacker.invalid')).status,403);
+    assert.equal((await post('/api/watchlist',{code:'SH.601318'})).status,200);
+    let snapshot=await (await fetch(base+'/api/snapshot')).json();
+    assert.ok(snapshot.instruments.find(item=>item.id==='SH.601318').quote.price>0);
+    await post('/api/watchlist/remove',{id:'SH.601318'});
+    snapshot=await (await fetch(base+'/api/snapshot')).json();
+    assert.ok(!snapshot.instruments.some(item=>item.id==='SH.601318'));
+  });
+});

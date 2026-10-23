@@ -71,7 +71,7 @@ class WindDataTest(unittest.TestCase):
                 if fields == 'rt_date':
                     return result([], [], error=-1)
                 return result(['RT_LAST', 'RT_PRE_CLOSE', 'RT_VOL', 'RT_TIME'], [[1335, 4.178], [1300, 4.107], [50, 100], [153011, 153011]], codes=['600519.SH', '510300.SH'])
-        self.assertIs(board.refresh_quotes(API(), None), False)
+        self.assertFalse(board.refresh_quotes(API(), None)['cn'])
         self.assertEqual(board.states['SH.510300']['quote']['price'], 4.178)
         self.assertEqual(board.states['SH.600519']['quote']['price'], 1335)
         self.assertIsNone(board.states['SH.510300']['quote']['timestamp'])

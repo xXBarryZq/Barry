@@ -1,12 +1,11 @@
-import { analyze } from '/strategy.js';
+import { analyze, actionHistory } from '/strategy.js';
 
 const $ = selector => document.querySelector(selector);
 const marketNames = { cn: 'A 股市场', futures: '国内商品期货', us: '美股市场' };
 const marketZones = { cn: 'Asia/Shanghai', futures: 'Asia/Shanghai', us: 'America/New_York' };
 const escape = value => String(value).replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
 const readStored = (key, fallback) => { try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; } };
-const storedStars = readStored('barry-stars', ['SH.510300', 'SHFE.au', 'US.SPY']);
-const state = { snapshot: null, receivedAt: 0, connected: false, lastEventAt: performance.now(), market: 'all', query: '', selected: readStored('barry-selected', 'SH.510300'), starred: new Set(Array.isArray(storedStars) ? storedStars : []) };
+const state = { snapshot: null, receivedAt: 0, connected: false, lastEventAt: performance.now(), market: 'all', selected: readStored('barry-selected', 'SH.510300') };
 const save = (key, value) => { try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* Private browsing may disable storage. */ } };
 const time = (value, date = false, zone = 'Asia/Shanghai') => value ? new Intl.DateTimeFormat('zh-CN', { timeZone: zone, ...(date ? { month: '2-digit', day: '2-digit' } : {}), hour: '2-digit', minute: '2-digit', second: date ? '2-digit' : undefined, hour12: false }).format(value) : '—';
 const now = () => state.snapshot ? state.snapshot.serverTime + (performance.now() - state.receivedAt) : Date.now();
@@ -22,7 +21,7 @@ const change = item => item.quote ? (item.quote.price / item.quote.previousClose
 const pct = value => value == null ? '—' : `${value >= 0 ? '+' : ''}${value.toFixed(2)}%`;
 const color = value => value == null || Math.abs(value) < 0.005 ? 'flat' : value > 0 ? 'up' : 'down';
 const compact = value => value == null ? '—' : new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumFractionDigits: 1 }).format(value);
-const list = () => (state.snapshot?.instruments || []).filter(item => (state.market === 'all' || (state.market === 'starred' ? state.starred.has(item.id) : item.market === state.market)) && `${item.name} ${item.symbol} ${item.id} ${item.kind}`.toLowerCase().includes(state.query));
+const list = () => (state.snapshot?.instruments || []).filter(item => state.market === 'all' || item.market === state.market);
 
 function renderOverview() {
   $('#overview').innerHTML = Object.entries(marketNames).map(([market, title], index) => {
@@ -39,7 +38,8 @@ function renderTable() {
   $('#instrument-count').textContent = items.length;
   $('#quote-body').innerHTML = items.map(item => {
     const signal = strategy(item);
-    return `<tr class="${state.selected === item.id ? 'selected' : ''} ${fresh(item) ? '' : 'stale-row'}"><td><button class="star ${state.starred.has(item.id) ? 'starred' : ''}" data-star="${item.id}" aria-label="${state.starred.has(item.id) ? '移除' : '添加'}自选 ${escape(item.name)}" aria-pressed="${state.starred.has(item.id)}">${state.starred.has(item.id) ? '★' : '☆'}</button></td><td><button class="instrument-button" data-select="${item.id}"><strong>${escape(item.name)}</strong><span>${escape(item.symbol)} <i>${item.kind}</i></span></button></td><td class="number quote-price ${color(change(item))}">${price(item.quote?.price, item)}<span>${item.currency}${fresh(item) ? '' : ' · 无新行情'}</span></td><td class="number"><span class="change-chip ${color(change(item))}">${pct(change(item))}</span></td><td><span class="signal-label ${signal.direction}"><span class="signal-dot"></span>${signal.label}</span></td></tr>`;
+    const action = signal.action;
+    return `<tr class="${state.selected === item.id ? 'selected' : ''} ${fresh(item) ? '' : 'stale-row'}"><td><button class="remove-watch" data-remove="${escape(item.id)}" aria-label="移除自选 ${escape(item.name)}">×</button></td><td><button class="instrument-button" data-select="${escape(item.id)}"><strong>${escape(item.name)}</strong><span>${escape(item.symbol)} <i>${escape(item.kind)}</i></span></button></td><td class="number quote-price ${color(change(item))}">${price(item.quote?.price, item)}<span>${item.currency}${fresh(item) ? '' : ' · 无新行情'}</span></td><td class="number"><span class="change-chip ${color(change(item))}">${pct(change(item))}</span></td><td class="action-cell" aria-label="${action ? action.label : '未触发买卖标记'}">${action ? `<span class="trade-tag ${action.type}">${action.label}</span>` : ''}</td></tr>`;
   }).join('');
   $('#empty-list').classList.toggle('hidden', items.length > 0);
 }
@@ -66,13 +66,24 @@ function drawChart(item) {
     const line = `M${points.map(point => `${point.x},${point.y}`).join(' L')}`;
     return `<path d="${line} L${points.at(-1).x},175 L${points[0].x},175 Z" fill="url(#chart-fill)"/><path d="${line}" stroke="${stroke}" fill="none" stroke-width="2" vector-effect="non-scaling-stroke"/>`;
   }).join('');
-  $('#chart').innerHTML = `<svg viewBox="0 0 520 180" aria-hidden="true"><defs><linearGradient id="chart-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="${stroke}" stop-opacity="0.18"/><stop offset="100%" stop-color="${stroke}" stop-opacity="0"/></linearGradient></defs>${[35, 90, 145].map(line => `<line x1="8" y1="${line}" x2="448" y2="${line}" class="chart-grid"/><text x="458" y="${line + 4}" class="chart-axis-label">${price(upper - (line - 20) / 140 * (upper - lower), item)}</text>`).join('')}${paths}<circle cx="448" cy="${y(values.at(-1)).toFixed(2)}" r="3.5" fill="${stroke}"/></svg>`;
+  const markers = actionHistory(item,item.bars,state.snapshot.serverTime).filter(marker=>marker.barTime>=bars[0].time).map(marker=>{
+    const cx=x({time:marker.barTime}).toFixed(2), cy=Math.max(12,Math.min(166,y(marker.price)+(marker.type==='buy'?17:-17))).toFixed(2);
+    return `<g class="chart-marker ${marker.type}"><title>${marker.label}规则触发于${time(marker.time)}，历史信号</title><circle cx="${cx}" cy="${cy}" r="8"/><text x="${cx}" y="${Number(cy)+3}">${marker.type==='buy'?'B':'S'}</text></g>`;
+  }).join('');
+  $('#chart').innerHTML = `<svg viewBox="0 0 520 180" aria-hidden="true"><defs><linearGradient id="chart-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="${stroke}" stop-opacity="0.18"/><stop offset="100%" stop-color="${stroke}" stop-opacity="0"/></linearGradient></defs>${[35, 90, 145].map(line => `<line x1="8" y1="${line}" x2="448" y2="${line}" class="chart-grid"/><text x="458" y="${line + 4}" class="chart-axis-label">${price(upper - (line - 20) / 140 * (upper - lower), item)}</text>`).join('')}${paths}<circle cx="448" cy="${y(values.at(-1)).toFixed(2)}" r="3.5" fill="${stroke}"/>${markers}</svg>`;
   $('#chart-axis').innerHTML = `<span>${time(bars[0].time)}</span><span>${time(bars[Math.floor(bars.length / 2)].time)}</span><span>${time(bars.at(-1).time)} 上海</span>`;
 }
 
 function renderDetail() {
   const item = state.snapshot.instruments.find(item => item.id === state.selected) || state.snapshot.instruments[0];
-  if (!item) return;
+  if (!item) {
+    $('#detail-name').textContent='搜索并添加一个品种'; $('#detail-symbol').textContent='开始建立你的自选';
+    $('#detail-price').textContent='—'; $('#detail-change').textContent=''; $('#detail-kind').textContent='';
+    $('#selected-action').className='trade-tag hidden'; $('#strategy-label').classList.add('hidden');
+    $('#chart').innerHTML='<div class="chart-empty">添加自选后查看图表与买卖信号</div>';
+    $('#chart-axis').innerHTML=''; $('#detail-stats').innerHTML=''; $('#strategy-levels').innerHTML='';
+    $('#strategy-reason').textContent='在上方搜索名称或完整证券代码。'; $('#strategy-time').textContent=''; $('#market-rule').textContent='';return;
+  }
   state.selected = item.id;
   const signal = strategy(item);
   $('#detail-symbol').textContent = `${item.id} / ${item.currency}`;
@@ -81,23 +92,25 @@ function renderDetail() {
   $('#detail-price').textContent = price(item.quote?.price, item);
   $('#detail-change').textContent = pct(change(item));
   $('#detail-change').className = `change ${color(change(item))}`;
+  $('#selected-action').textContent=signal.action?.label || '';
+  $('#selected-action').className=`trade-tag ${signal.action?.type || ''} ${signal.action?'':'hidden'}`;
   $('#chart-caption').textContent = state.snapshot.mode === 'demo' ? '模拟走势' : `${Math.min(item.bars.length, 60)} 根有效 K 线 · 缺失处断开`;
   drawChart(item);
   $('#detail-stats').innerHTML = [['前收盘', price(item.quote?.previousClose, item)], ['成交量 · 源单位', compact(item.quote?.volume)], ['行情时间 · 上海', item.quote?.timeLabel || time(item.quote?.timestamp)], item.quote?.receivedAt ? ['读取时间 · 上海', time(item.quote.receivedAt, true)] : [item.market === 'us' ? '行情时间 · 纽约' : '计价货币', item.market === 'us' ? time(item.quote?.timestamp, false, marketZones.us) : item.currency]].map(([label, value]) => `<div><span>${label}</span><strong>${escape(value)}</strong></div>`).join('');
-  $('#strategy-label').textContent = signal.label;
-  $('#strategy-label').className = signal.direction;
-  $('#strategy-reason').textContent = signal.reason;
-  $('#strategy-levels').innerHTML = signal.levels ? `<div class="levels">${[['参考收盘价', signal.levels.reference], ['趋势失效观察', signal.levels.invalidation], ['延伸观察位', signal.levels.observation]].map(([label, value]) => `<div><span>${label}</span><strong>${price(value, item)}</strong></div>`).join('')}</div><p class="level-note">${signal.levels.basis}</p>` : '';
+  $('#strategy-label').textContent = signal.action?.label || '';
+  $('#strategy-label').className = signal.action ? signal.action.type : 'hidden';
+  $('#strategy-reason').textContent = signal.action ? `${signal.action.reason} ${signal.action.note}` : ['bullish','bearish','neutral'].includes(signal.direction) ? '当前未同时满足趋势、突破和放量条件，买卖标记留空。' : signal.reason;
+  $('#strategy-levels').innerHTML = signal.action && signal.levels ? `<div class="levels">${[['触发收盘价', signal.levels.reference], ['趋势失效观察', signal.levels.invalidation], ['延伸观察位', signal.levels.observation]].map(([label, value]) => `<div><span>${label}</span><strong>${price(value, item)}</strong></div>`).join('')}</div><p class="level-note">${escape(signal.levels.basis)}</p>` : '';
   $('#strategy-time').textContent = signal.barTime ? `基于 ${time(signal.barTime + 60_000)} 收盘的 1 分钟 K 线 · 非收益预测` : '数据不足或过期时，不生成价格区间';
   $('#market-rule').textContent = item.rule;
 }
 
 function renderSignals() {
-  const items = state.snapshot.instruments.filter(item => ['bullish', 'bearish'].includes(strategy(item).direction)).slice(0, 4);
+  const items = state.snapshot.instruments.filter(item => strategy(item).action).slice(0, 4);
   $('#signal-grid').innerHTML = items.length ? items.map(item => {
     const signal = strategy(item);
-    return `<button class="signal-card" data-select="${item.id}"><div class="signal-card-top"><span class="signal-arrow ${signal.direction}">${signal.direction === 'bullish' ? '↗' : '↘'}</span><span class="signal-label ${signal.direction}">${signal.label}</span><span class="small-label">1 MIN</span></div><h3>${escape(item.name)} <span>${escape(item.symbol)}</span></h3><p>${escape(signal.reason)}</p><span class="small-label">${time(signal.barTime + 60_000)} 收盘计算 ${state.snapshot.mode === 'demo' ? '· 模拟' : ''}</span></button>`;
-  }).join('') : '<div class="empty">暂无可用趋势信号。等待足够的新鲜行情和已收盘 K 线。</div>';
+    return `<button class="signal-card" data-select="${escape(item.id)}"><div class="signal-card-top"><span class="trade-tag ${signal.action.type}">${signal.action.label}</span><span class="small-label">1 MIN</span></div><h3>${escape(item.name)} <span>${escape(item.symbol)}</span></h3><p>${escape(signal.action.reason)}</p><span class="small-label">${time(signal.action.time)} 收盘触发 ${state.snapshot.mode === 'demo' ? '· 模拟' : ''}</span></button>`;
+  }).join('') : '<div class="empty">当前没有同时满足规则的买卖信号。</div>';
 }
 
 function render() {
@@ -110,6 +123,7 @@ function render() {
     $('#data-banner div > span').textContent = state.snapshot.status.message;
   }
   $('#source-label').textContent = state.snapshot.source;
+  $('#directory-status').textContent=state.snapshot.directoryStatus || '输入代码或名称查找证券，点击添加开始读取行情。';
   renderOverview(); renderTable(); renderDetail(); renderSignals();
 }
 
@@ -125,25 +139,58 @@ function toast(message) {
   toast.timer = setTimeout(() => $('#toast').classList.add('hidden'), 3000);
 }
 
-document.addEventListener('click', event => {
-  const star = event.target.closest('[data-star]');
-  if (star) { const id = star.dataset.star; if (state.starred.has(id)) state.starred.delete(id); else state.starred.add(id); save('barry-stars', [...state.starred]); render(); return; }
+document.addEventListener('click', async event => {
+  const add=event.target.closest('[data-add]');
+  if(add) {
+    add.disabled=true;
+    try { const data=await api('/api/watchlist',{code:add.dataset.add}); state.selected=data.instrument.id;save('barry-selected',state.selected);++searchGeneration;clearTimeout(searchTimer);searchController?.abort();$('#search').value='';$('#search-results').classList.add('hidden');await refresh();setMarket('all');toast('已添加自选，正在读取行情。'); } catch(error){toast(error.message);add.disabled=false;} return;
+  }
+  const remove=event.target.closest('[data-remove]');
+  if(remove){try{await api('/api/watchlist/remove',{id:remove.dataset.remove});await refresh();toast('已移除自选。');}catch(error){toast(error.message);}return;}
   const selection = event.target.closest('[data-select]');
-  if (selection) { state.selected = selection.dataset.select; save('barry-selected', state.selected); render(); return; }
+  if (selection) { state.selected = selection.dataset.select; save('barry-selected', state.selected); render(); if(innerWidth<640)document.querySelector('.detail-panel').scrollIntoView({behavior:'smooth',block:'start'});return; }
   const market = event.target.closest('[data-market], [data-overview]');
   if (market) setMarket(market.dataset.market || market.dataset.overview);
 });
-$('#search').addEventListener('input', event => { state.query = event.target.value.trim().toLowerCase(); if (state.snapshot) renderTable(); });
-$('#watch-nav').addEventListener('click', () => setMarket('starred'));
+let searchTimer,searchController,searchGeneration=0;
+async function search(query,generation){
+  if(!query){$('#search-results').classList.add('hidden');return;}
+  searchController?.abort();searchController=new AbortController();
+  try{
+    const response=await fetch(`/api/search?q=${encodeURIComponent(query)}`,{signal:searchController.signal});
+    if(!response.ok)throw Error('搜索服务暂不可用');
+    const data=await response.json();if(generation!==searchGeneration)return;
+    $('#search-results').classList.remove('hidden');
+    $('#search-results').innerHTML=(data.results||[]).map(item=>`<div class="search-result"><div><strong>${escape(item.name)}</strong><span>${escape(item.windCode||item.id)} · ${escape(item.kind)} · ${item.currency}</span></div><button class="button ${item.added?'secondary':''}" data-add="${escape(item.id)}" ${item.added?'disabled':''}>${item.added?'已添加':'+ 添加'}</button></div>`).join('')+`<p class="search-note">${escape(data.pending?'Wind 正在校验代码，请稍候……':data.message||'名称目录中没有匹配项，可尝试完整代码或导入目录。')}</p>`;
+    if(data.pending)searchTimer=setTimeout(()=>search(query,generation),1000);
+  }catch(error){if(error.name!=='AbortError'&&generation===searchGeneration){$('#search-results').classList.remove('hidden');$('#search-results').textContent=error.message;}}
+}
+$('#search').addEventListener('input',event=>{clearTimeout(searchTimer);const generation=++searchGeneration;const query=event.target.value.trim();searchTimer=setTimeout(()=>search(query,generation),300);});
+$('#watch-nav').addEventListener('click', () => {setMarket('all');document.querySelector('.watchlist-panel').scrollIntoView({behavior:'smooth'});});
 document.addEventListener('keydown', event => { if (event.key === '/' && !['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName) && !$('#help-dialog').open) { event.preventDefault(); $('#search').focus(); } });
-$('#help-button').addEventListener('click', () => $('#help-dialog').showModal());
+$('#help-button').addEventListener('click', () => {$('#us-quote-zone').value=state.snapshot?.settings?.usQuoteZone||'unknown';$('#us-bar-zone').value=state.snapshot?.settings?.usBarZone||'unknown';$('#help-dialog').showModal();});
 $('#close-help').addEventListener('click', () => $('#help-dialog').close());
 $('#help-done').addEventListener('click', () => $('#help-dialog').close());
+$('#save-settings').addEventListener('click',async()=>{
+  try{if(state.snapshot?.provider!=='wind-local')throw Error('请在 Wind 本机版设置行情时间口径。');await api('/api/settings',{usQuoteZone:$('#us-quote-zone').value,usBarZone:$('#us-bar-zone').value});$('#settings-message').textContent='已保存，正在重新读取美股行情。';await refresh();}catch(error){$('#settings-message').textContent=error.message;}
+});
+$('#import-button').addEventListener('click',()=>$('#catalog-file').click());
+$('#catalog-file').addEventListener('change',async event=>{
+  const file=event.target.files[0];if(!file)return;
+  try{
+    if(state.snapshot?.provider!=='wind-local')throw Error('名称目录导入请在 Wind 本机版使用。');
+    if(file.size>1_500_000)throw Error('目录文件请控制在 1.5 MB 以内。');
+    const bytes=await file.arrayBuffer();let text=new TextDecoder('utf-8').decode(bytes);
+    if(text.includes('\ufffd'))text=new TextDecoder('gb18030').decode(bytes);
+    const data=await api('/api/catalog',{csv:text});toast(`已导入 ${data.imported} 条名称，可在上方搜索。`);
+    if($('#search').value.trim())search($('#search').value.trim(),++searchGeneration);
+  }catch(error){toast(error.message);}finally{event.target.value='';}
+});
 $('#export-button').addEventListener('click', () => {
   if (!state.snapshot) { toast('行情还未加载，请稍后。'); return; }
-  const rows = [['模式', '品种', '代码', '货币', '最新价', '前收盘', '涨跌幅(%)', '行情时间(UTC)', '策略状态', '规则说明']];
-  list().forEach(item => rows.push([state.snapshot.mode === 'demo' ? '模拟数据' : '外部接口', item.name, item.id, item.currency, item.quote?.price ?? '', item.quote?.previousClose ?? '', change(item)?.toFixed(4) ?? '', Number.isFinite(item.quote?.timestamp) ? new Date(item.quote.timestamp).toISOString() : '', strategy(item).label, strategy(item).reason]));
-  const csv = '\uFEFF' + rows.map(row => row.map(value => `"${String(value).replace(/"/g, '""')}"`).join(',')).join('\r\n');
+  const rows = [['模式', '品种', '代码', '货币', '最新价', '前收盘', '涨跌幅(%)', '行情时间(UTC)', '买卖标记', '规则说明']];
+  list().forEach(item => rows.push([state.snapshot.mode === 'demo' ? '模拟数据' : '外部接口', item.name, item.id, item.currency, item.quote?.price ?? '', item.quote?.previousClose ?? '', change(item)?.toFixed(4) ?? '', Number.isFinite(item.quote?.timestamp) ? new Date(item.quote.timestamp).toISOString() : '', strategy(item).action?.label||'', strategy(item).action?.reason||strategy(item).reason]));
+  const csv = '\uFEFF' + rows.map(row => row.map(value => {const text=String(value);return `"${(typeof value==='string'&&/^[=+\-@\t\r]/.test(text)?"'"+text:text).replace(/"/g, '""')}"`;}).join(',')).join('\r\n');
   const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
   const anchor = document.createElement('a'); anchor.href = url; anchor.download = `barry-${state.snapshot.mode}-${new Date().toISOString().slice(0, 10)}.csv`; anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
   toast('已导出当前筛选下的观察记录。');
@@ -154,6 +201,19 @@ function setConnection(connected) {
   $('#connection-dot').classList.toggle('connected', connected);
   $('#connection-text').textContent = connected ? '行情通道已连接' : '连接中断 · 正在重连';
 }
+async function api(path,body){
+  const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const data=await response.json();if(!response.ok)throw Error(data.error||'请求失败，请重试。');return data;
+}
+function acceptSnapshot(snapshot,connected=false){
+  state.snapshot=snapshot;
+  if(snapshot.computeStrategies)snapshot.instruments.forEach(item=>{item.strategy=analyze(item,item.quote,item.bars,snapshot.serverTime);});
+  if(!snapshot.instruments.some(item=>item.id===state.selected))state.selected=snapshot.instruments[0]?.id||'';
+  state.receivedAt=performance.now();
+  if(connected){state.lastEventAt=state.receivedAt;setConnection(true);}
+  render();
+}
+async function refresh(){const response=await fetch('/api/snapshot');if(!response.ok)throw Error('行情快照读取失败');acceptSnapshot(await response.json());}
 let events;
 function connect() {
   state.lastEventAt = performance.now();
@@ -161,16 +221,7 @@ function connect() {
   events.onopen = () => { state.lastEventAt = performance.now(); };
   events.onmessage = event => {
     try {
-      state.snapshot = JSON.parse(event.data);
-      if (state.snapshot.computeStrategies) {
-        state.snapshot.instruments.forEach(item => {
-          item.strategy = analyze(item, item.quote, item.bars, state.snapshot.serverTime);
-        });
-      }
-      state.receivedAt = performance.now();
-      state.lastEventAt = state.receivedAt;
-      setConnection(true);
-      render();
+      acceptSnapshot(JSON.parse(event.data),true);
     } catch { setConnection(false); render(); toast('行情数据格式异常，请刷新后重试。'); }
   };
   events.onerror = () => { setConnection(false); render(); };

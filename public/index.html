@@ -24,42 +24,46 @@
     </header>
     <main id="workspace">
       <section class="page-heading">
-        <div><div class="eyebrow">YOUR MARKETS, IN FOCUS</div><h1>把市场变化，变成有据可循的观察<span>。</span></h1><p>跨市场行情 · 趋势信号 · 风险参考</p></div>
+        <div><div class="eyebrow">WATCH · ANALYZE · DECIDE</div><h1>你的自选，清晰的买卖信号<span>。</span></h1><p>选中股票或 ETF · 满足规则才标注买入 / 卖出 · 未触发时留空</p></div>
         <button class="button secondary" id="export-button">↓ 导出观察记录</button>
       </section>
       <div class="data-banner" id="data-banner" role="status"><span class="banner-icon">!</span><div><strong>正在读取行情状态</strong><span>请稍候</span></div></div>
+      <section class="security-search-section" aria-label="搜索并添加自选">
+        <div class="security-search-row"><label class="search"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="输入代码或名称，搜索并添加自选，如 601318 / 中国平安 / AAPL.O" aria-label="搜索证券代码或名称" autocomplete="off" aria-controls="search-results"><kbd>/</kbd></label><button class="button secondary" id="import-button">导入名称目录</button><input id="catalog-file" class="hidden" type="file" accept=".csv,text/csv"></div>
+        <div id="search-results" class="search-results hidden" aria-live="polite"></div>
+        <p class="search-scope" id="directory-status">输入代码或名称查找证券，点击“添加”后开始读取行情。</p>
+      </section>
       <section class="overview" aria-label="市场概览" id="overview"></section>
       <div class="workspace-grid">
         <section class="panel watchlist-panel">
-          <div class="panel-heading"><div><span class="eyebrow">WATCHLIST</span><h2>行情雷达 <span id="instrument-count" class="count">0</span></h2></div><span class="subtle">红涨 · 绿跌</span></div>
+          <div class="panel-heading"><div><span class="eyebrow">WATCHLIST</span><h2>我的自选 <span id="instrument-count" class="count">0</span></h2></div><span class="subtle">买卖条件未满足时留空</span></div>
           <div class="tabs" role="group" aria-label="筛选市场">
             <button class="tab active" data-market="all" aria-pressed="true">全部</button>
             <button class="tab" data-market="cn" aria-pressed="false">A 股</button>
             <button class="tab" data-market="futures" aria-pressed="false">商品期货</button>
             <button class="tab" data-market="us" aria-pressed="false">美股</button>
-            <button class="tab" data-market="starred" aria-pressed="false">自选 ☆</button>
           </div>
-          <label class="search"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="搜索名称或代码" aria-label="搜索品种"><kbd>/</kbd></label>
-          <div class="table-scroll"><table class="quote-table"><thead><tr><th aria-label="自选"></th><th>品种 / 代码</th><th class="number">最新价</th><th class="number">涨跌幅</th><th>策略状态</th></tr></thead><tbody id="quote-body"></tbody></table></div>
-          <div class="empty hidden" id="empty-list">没有匹配的品种。可以更换关键词，或点击 ☆ 添加自选。</div>
+          <div class="table-scroll"><table class="quote-table"><thead><tr><th aria-label="移除自选"></th><th>品种 / 代码</th><th class="number">最新价</th><th class="number">涨跌幅</th><th>买卖标记</th></tr></thead><tbody id="quote-body"></tbody></table></div>
+          <div class="empty hidden" id="empty-list">当前列表为空。在上方搜索代码或名称，点击“添加”建立自选。</div>
           <div class="table-footer"><span id="source-label">等待数据</span><span>1 分钟策略周期</span></div>
         </section>
         <section class="panel detail-panel" aria-label="品种详情">
           <div class="detail-heading"><div><div class="eyebrow" id="detail-symbol">—</div><h2 id="detail-name">选择一个品种</h2></div><span class="badge" id="detail-kind">—</span></div>
-          <div class="detail-price"><span id="detail-price">—</span><span id="detail-change" class="change">—</span></div>
+          <div class="detail-price"><span id="detail-price">—</span><span id="detail-change" class="change">—</span><span id="selected-action" class="trade-tag hidden" role="status"></span></div>
           <div class="chart-heading"><span>1 分钟收盘走势</span><span id="chart-caption">等待数据</span></div>
           <div id="chart" class="chart" role="img" aria-label="价格走势"></div>
           <div class="chart-axis" id="chart-axis"><span>—</span><span>—</span><span>—</span></div>
+          <div class="chart-legend">B / S 为历史买卖规则触发点；当前标记以最新完整数据为准。</div>
           <div class="detail-stats" id="detail-stats"></div>
-          <div class="strategy-box"><div class="strategy-title"><span class="eyebrow">STRATEGY LENS</span><span class="small-label">EMA 5 / 20 · ATR 14</span></div><h3 id="strategy-label">等待行情</h3><p id="strategy-reason">正在加载数据。</p><div id="strategy-levels"></div><div class="strategy-time" id="strategy-time">—</div></div>
+          <div class="strategy-box"><div class="strategy-title"><span class="eyebrow">买卖规则说明</span><span class="small-label">趋势 + 突破 + 放量</span></div><h3 id="strategy-label" class="hidden"></h3><p id="strategy-reason">正在加载数据。</p><div id="strategy-levels"></div><div class="strategy-time" id="strategy-time">—</div></div>
           <div class="market-rule"><span>ⓘ</span><p id="market-rule">请先选择品种。</p></div>
         </section>
       </div>
-      <section class="panel signals-panel"><div class="panel-heading"><div><span class="eyebrow">SIGNAL MONITOR</span><h2>当前信号观察</h2></div><span class="subtle">只使用已收盘 K 线 · 不自动下单</span></div><div id="signal-grid" class="signal-grid"></div></section>
+      <section class="panel signals-panel"><div class="panel-heading"><div><span class="eyebrow">TRIGGERED SIGNALS</span><h2>当前触发的买卖信号</h2></div><span class="subtle">仅已收盘 K 线 · 规则参考 · 不自动下单</span></div><div id="signal-grid" class="signal-grid"></div></section>
       <footer class="footer"><span>BARRY <span class="footer-mark">/</span> 做有依据的观察</span><span>策略规则尚未经回测；不包含交易费用、滑点及资金管理，不保证收益。</span></footer>
     </main>
   </div>
-  <dialog id="help-dialog"><div class="dialog-heading"><h2>从这里开始</h2><button id="close-help" class="icon-button" aria-label="关闭说明">×</button></div><ol><li>点击市场标签筛选品种，点击 ☆ 保存你的自选列表。</li><li>点击行情行，查看分钟走势、趋势原因和波动观察区间。</li><li>模拟模式下所有价格都是生成的数据，不代表实际市场。</li><li>真实行情需接入你已授权的数据服务。90 秒未更新会暂停策略判断，休市也可能触发。</li></ol><p>时间均按上海时区显示。美元与人民币不混合计算；主连仅供观察，不对应可直接交易的期货合约。</p><p>真实行情接口接通、数据延迟和策略效果完成验证前，请勿据此进行实际交易。</p><button class="button" id="help-done">知道了</button></dialog>
+  <dialog id="help-dialog"><div class="dialog-heading"><h2>使用与规则设置</h2><button id="close-help" class="icon-button" aria-label="关闭说明">×</button></div><ol><li>上方输入代码或名称，在结果中点击“添加”。点击自选列表中的品种查看分析，× 可移除。</li><li>买入：均线趋势向上 + 收盘突破前20根高点 + 成交量≥前20根均量1.2倍。卖出使用相反方向条件。未同时满足则不标注。</li><li>股票与ETF的卖出标记供已有持仓参考；A股还须遵守T+1。历史标记不是当时可保证成交的价格。</li><li>模拟价格仅供体验。过期、缺失或时区未确认时暂停买卖标记。</li></ol><details><summary>Wind 美股时间口径（请以 Wind 确认为准）</summary><p>报价与分钟数据可能使用不同口径，分别设置。未确认时保留“未确认”，不要凭数值猜测。</p><label class="zone-setting">报价时区<select id="us-quote-zone"><option value="unknown">未确认</option><option value="UTC">UTC</option><option value="Asia/Shanghai">北京时间</option><option value="America/New_York">美东时间（自动夏令时）</option></select></label><label class="zone-setting">分钟数据时区<select id="us-bar-zone"><option value="unknown">未确认</option><option value="UTC">UTC</option><option value="Asia/Shanghai">北京时间</option><option value="America/New_York">美东时间（自动夏令时）</option></select></label><button class="button secondary" id="save-settings">保存时间口径</button><p id="settings-message" role="status"></p></details><p>名称搜索以加载的 Wind 目录为范围。ETF、美股可输入完整 Wind 代码查询；也可导入含“wind_code、sec_name”或“证券代码、证券简称”列的 CSV 目录。</p><p>策略未经收益回测，不包含费用、滑点和个人持仓判断，不保证收益。</p><button class="button" id="help-done">知道了</button></dialog>
   <div id="toast" class="toast hidden" role="status"></div>
 </body>
 </html>

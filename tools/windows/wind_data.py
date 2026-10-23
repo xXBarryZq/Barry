@@ -10,6 +10,7 @@ WIND_CODES = {
     'SH.600519': '600519.SH', 'SZ.300750': '300750.SZ',
     'SHFE.rb': 'RB.SHF', 'SHFE.au': 'AU.SHF',
     'DCE.i': 'I.DCE', 'CZCE.MA': 'MA.CZC',
+    'US.AAPL': 'AAPL.O', 'US.NVDA': 'NVDA.O', 'US.SPY': 'SPY.P', 'US.QQQ': 'QQQ.O',
 }
 
 
@@ -23,11 +24,29 @@ def finite(value, positive=False):
     return number
 
 
-def timestamp(value):
+def get_zone(name):
+    if name == 'unknown':
+        return None
+    if name == 'Asia/Shanghai':
+        return CHINA
+    if name == 'UTC':
+        return timezone.utc
+    if name == 'America/New_York':
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+        try:
+            return ZoneInfo(name)
+        except ZoneInfoNotFoundError as error:
+            raise ValueError('本机缺少美东时区数据库，请在当前 Python 安装 tzdata 后再设置。') from error
+    raise ValueError('不支持的时区')
+
+
+def timestamp(value, zone=CHINA):
     if not isinstance(value, datetime):
         raise ValueError('Wind 时间必须为 datetime')
     if value.tzinfo is None:
-        value = value.replace(tzinfo=CHINA)
+        if zone is None:
+            raise ValueError('美股时间口径尚未确认')
+        value = value.replace(tzinfo=zone)
     return int(value.timestamp() * 1000)
 
 
@@ -79,7 +98,7 @@ def cells(result, index=0):
             if i < len(data) and data[i] is not None and index < len(data[i])}
 
 
-def quote_from_result(result, date_result, received_at, index=0, date_index=0):
+def quote_from_result(result, date_result, received_at, index=0, date_index=0, zone=CHINA):
     row = cells(result, index)
     price = finite(row.get('RT_LAST'), positive=True)
     previous = finite(row.get('RT_PRE_CLOSE'), positive=True)
@@ -94,7 +113,12 @@ def quote_from_result(result, date_result, received_at, index=0, date_index=0):
         label = clock.strftime('%H:%M:%S') + ' · 日期待确认'
         # Never derive the source date from result.Times (the request time).
         day = source_date(cells(date_result, date_index).get('RT_DATE'))
-        quote_time = timestamp(datetime.combine(day, clock))
+        if zone is None:
+            label = day.isoformat() + ' ' + clock.strftime('%H:%M:%S') + ' · 时区待确认'
+            issue = 'Wind 美股报价时区尚未确认；显示原始时间与价格，暂不生成买卖标记。'
+            return {'price': price, 'previousClose': previous, 'volume': volume,
+                    'timestamp': None, 'receivedAt': received_at, 'timeLabel': label}, issue
+        quote_time = timestamp(datetime.combine(day, clock), zone)
         if quote_time > received_at + 10_000:
             quote_time = None
             raise ValueError('源行情时间超前，请核对电脑时间和行情字段')
@@ -107,10 +131,12 @@ def quote_from_result(result, date_result, received_at, index=0, date_index=0):
     }, issue
 
 
-def bars_from_result(result, now):
+def bars_from_result(result, now, zone=CHINA):
     """WSI minute timestamps are interval ends; the common schema uses starts."""
     if getattr(result, 'ErrorCode', None) != 0:
         raise ValueError('Wind 分钟接口返回错误')
+    if zone is None:
+        raise ValueError('Wind 美股分钟数据时区尚未确认')
     times = getattr(result, 'Times', None) or []
     fields = [str(field).upper() for field in (getattr(result, 'Fields', None) or [])]
     required = {'OPEN', 'HIGH', 'LOW', 'CLOSE', 'VOLUME'}
@@ -119,7 +145,7 @@ def bars_from_result(result, now):
     bars, seen, missing = [], set(), 0
     for index, value in enumerate(times):
         try:
-            end = timestamp(value)
+            end = timestamp(value, zone)
         except (ValueError, TypeError, OverflowError):
             missing += 1
             continue
