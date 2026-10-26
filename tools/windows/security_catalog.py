@@ -7,6 +7,7 @@ import os
 import re
 import tempfile
 import threading
+import unicodedata
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -15,8 +16,15 @@ FUTURES = {'SHF': ('SHFE', {'RB': ('螺纹钢', 1), 'AU': ('沪金', .02)}),
            'DCE': ('DCE', {'I': ('铁矿石', .5)}), 'CZC': ('CZCE', {'MA': ('甲醇', 1)})}
 
 
+def normalize_query(query):
+    text = unicodedata.normalize('NFKC', query).strip()
+    # Accept a pasted code followed by a Chinese company name; never trust it as the name.
+    match = re.fullmatch(r'(\d{6}(?:\.(?:SH|SZ|BJ))?)(?:\s*[\u3400-\u9fff].*)?', text, re.I)
+    return match.group(1) if match else text
+
+
 def candidates(query):
-    value = query.strip().upper()
+    value = normalize_query(query).upper()
     if not re.fullmatch(r'[A-Z0-9.^]{1,24}', value):
         return []
     if value.startswith(('SH.', 'SZ.', 'BJ.')):
@@ -73,7 +81,7 @@ class SecurityCatalog:
     def __init__(self):
         self.lock = threading.RLock()
         self.items = {}
-        self.a_share_status = '名称目录等待 Wind 加载；可先按完整代码查询。'
+        self.a_share_status = '名称目录等待Wind加载；股票/ETF可输入六位代码。'
         mapping = {'SH.510300':'510300.SH', 'SZ.159915':'159915.SZ', 'SH.600519':'600519.SH',
                    'SZ.300750':'300750.SZ', 'SHFE.rb':'RB.SHF', 'SHFE.au':'AU.SHF',
                    'DCE.i':'I.DCE', 'CZCE.MA':'MA.CZC', 'US.AAPL':'AAPL.O', 'US.NVDA':'NVDA.O',
@@ -82,6 +90,10 @@ class SecurityCatalog:
             item = {key:value for key,value in seed.items() if key != 'base'}
             item['windCode'] = mapping[item['id']]
             self.items[item['id']] = item
+        # Reference metadata only. No prices, entitlement or live-feed claim.
+        reference = instrument('002466.SZ', '天齐锂业')
+        reference.update(nameSource='内置参考名称', namePending=False)
+        self.items[reference['id']] = reference
 
     def add(self, item):
         with self.lock:
@@ -95,7 +107,7 @@ class SecurityCatalog:
             return next((dict(item) for item in self.items.values() if item['windCode'] in codes), None)
 
     def search(self, query, limit=15):
-        text = query.strip().casefold()
+        text = normalize_query(query).casefold()
         with self.lock:
             matches = [dict(item) for item in self.items.values() if text and any(text in str(item[key]).casefold() for key in ('name','symbol','id','windCode'))]
         matches.sort(key=lambda item: (not any(text == str(item[key]).casefold() for key in ('name','symbol','id','windCode')), len(item['name']), item['id']))
@@ -110,7 +122,9 @@ class SecurityCatalog:
             if not code or not name:
                 continue
             try:
-                self.add(instrument(str(code), name))
+                item = instrument(str(code), name)
+                item.update(nameSource='证券名称目录', namePending=False)
+                self.add(item)
                 added += 1
             except ValueError:
                 continue

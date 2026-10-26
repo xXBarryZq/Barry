@@ -28,7 +28,7 @@ class WatchlistTest(unittest.TestCase):
             board.set_status(True,'test')
             self.assertTrue(board.search('600036.SH')['pending'])
             class API:
-                def wss(self,code,fields):
+                def wss(self,code,fields,options=""):
                     self_test.assertEqual(fields,'sec_name')
                     return result(['SEC_NAME'],[['招商银行']],codes=[code])
             self_test=self

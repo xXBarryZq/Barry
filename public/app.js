@@ -172,6 +172,7 @@ function toast(message) {
 }
 
 document.addEventListener('click', async event => {
+  if(event.target.closest('#search-retry')){clearTimeout(searchTimer);search($('#search').value.trim(),++searchGeneration,true);return;}
   const add=event.target.closest('[data-add]');
   if(add) {
     add.disabled=true;
@@ -189,15 +190,15 @@ document.addEventListener('click', async event => {
   if (market) setMarket(market.dataset.market || market.dataset.overview);
 });
 let searchTimer,searchController,searchGeneration=0;
-async function search(query,generation){
+async function search(query,generation,retry=false){
   if(!query){$('#search-results').classList.add('hidden');return;}
   searchController?.abort();searchController=new AbortController();
   try{
-    const response=await fetch(`/api/search?q=${encodeURIComponent(query)}`,{signal:searchController.signal});
+    const response=await fetch(`/api/search?q=${encodeURIComponent(query)}${retry?'&retry=1':''}`,{signal:searchController.signal});
     if(!response.ok)throw Error('搜索服务暂不可用');
     const data=await response.json();if(generation!==searchGeneration)return;
     $('#search-results').classList.remove('hidden');
-    $('#search-results').innerHTML=(data.results||[]).map(item=>`<div class="search-result"><div><strong>${escape(item.name)}</strong><span>${escape(item.windCode||item.id)} · ${escape(item.kind)} · ${item.currency}</span></div><button class="button ${item.added?'secondary':''}" data-add="${escape(item.id)}" ${item.added?'disabled':''}>${item.added?'已添加':'+ 添加'}</button></div>`).join('')+`<p class="search-note">${escape(data.pending?'Wind 正在校验代码，请稍候……':data.message||'名称目录中没有匹配项，可尝试完整代码或导入目录。')}</p>`;
+    $('#search-results').innerHTML=(data.results||[]).map(item=>`<div class="search-result"><div><strong>${escape(item.name)}</strong><span>${escape(item.symbol)} · ${escape(item.kind)} · ${item.currency}</span><span>${escape(item.nameSource||'证券资料')}${item.preview?` · 查询返回价 ${price(item.preview.price,item)}（行情时间待确认）`:item.namePending?' · 名称/行情待核实':''}</span></div><button class="button ${item.added?'secondary':''}" data-add="${escape(item.id)}" ${item.added?'disabled':''}>${item.added?'已添加':item.namePending?'+ 按代码添加':'+ 添加'}</button></div>`).join('')+`<p class="search-note">${escape(data.pending?'Wind 正在校验代码，请稍候……':data.message||'输入六位股票或ETF代码即可搜索，无需填写交易所。')}</p>${data.canRetry?'<button class="button secondary" id="search-retry">重新查询</button>':''}`;
     if(data.pending)searchTimer=setTimeout(()=>search(query,generation),1000);
   }catch(error){if(error.name!=='AbortError'&&generation===searchGeneration){$('#search-results').classList.remove('hidden');$('#search-results').textContent=error.message;}}
 }

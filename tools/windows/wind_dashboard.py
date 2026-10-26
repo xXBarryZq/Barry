@@ -56,8 +56,9 @@ def make_server(dashboard, port):
                 return
             path = urlsplit(self.path).path
             if path == '/api/search':
-                query = parse_qs(urlsplit(self.path).query).get('q',[''])[0]
-                self.json(200, dashboard.search(query))
+                params = parse_qs(urlsplit(self.path).query)
+                query = params.get('q',[''])[0]
+                self.json(200, dashboard.search(query,retry=params.get('retry',['0'])[0]=='1'))
                 return
             if path == '/api/events':
                 self.connection.settimeout(15)

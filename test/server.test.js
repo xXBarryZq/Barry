@@ -75,3 +75,12 @@ test('demo search adds a security outside the initial list and can remove it', a
     assert.ok(!snapshot.instruments.some(item=>item.id==='SH.601318'));
   });
 });
+
+test('demo numeric stock and ETF autocomplete preserves leading zeros and fullwidth digits',async()=>{
+  await running({mode:'demo'},async base=>{
+    for(const [query,name,id] of [['002466','天齐锂业','SZ.002466'],['５１０３００','沪深300 ETF','SH.510300'],['159915','创业板 ETF','SZ.159915']]){
+      const data=await (await fetch(base+'/api/search?q='+encodeURIComponent(query))).json();
+      assert.equal(data.results[0].id,id);assert.equal(data.results[0].name,name);
+    }
+  });
+});

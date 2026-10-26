@@ -3,6 +3,7 @@ import { instruments, publicInstrument } from './instruments.js';
 import { analyze, MINUTE, STALE_AFTER } from './strategy.js';
 
 const demoCatalog = [
+  {id:'SZ.002466',symbol:'002466',name:'天齐锂业',market:'cn',kind:'股票',currency:'CNY',base:30,tick:.01,rule:'A股股票T+1；模拟模式不是真实价格。'},
   {id:'SH.601318',symbol:'601318',name:'中国平安',market:'cn',kind:'股票',currency:'CNY',base:50,tick:.01,rule:'A 股股票 T+1；卖出标记供已有持仓参考。'},
   {id:'SZ.000001',symbol:'000001',name:'平安银行',market:'cn',kind:'股票',currency:'CNY',base:12,tick:.01,rule:'A 股股票 T+1；卖出标记供已有持仓参考。'},
   {id:'SH.510050',symbol:'510050',name:'上证50 ETF',market:'cn',kind:'ETF',currency:'CNY',base:3,tick:.001,rule:'普通股票 ETF 通常 T+1。'},
@@ -80,7 +81,7 @@ export class Feed {
   }
 
   search(query) {
-    const q = query.trim().toLowerCase();
+    const q = query.normalize('NFKC').trim().toLowerCase().replace(/^(\d{6})(?:\s*[\u3400-\u9fff].*)$/,'$1');
     const normalized = q.replace(/^(\d{6})\.(sh|sz|bj)$/, '$2.$1');
     return {results:[...this.catalog.values()].filter(item => q && `${item.name} ${item.symbol} ${item.id}`.toLowerCase().includes(normalized)).slice(0,15).map(item => ({...publicInstrument(item),added:this.active.has(item.id)})),pending:false,message:'模拟目录用于体验添加流程；Wind 本机版通过名称目录和代码校验查询。'};
   }
