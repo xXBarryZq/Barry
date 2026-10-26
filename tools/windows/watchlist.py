@@ -8,6 +8,7 @@ import time
 from datetime import datetime, timedelta
 
 from swing_data import fetch_history
+from research import ResearchStore
 from security_catalog import SecurityCatalog, SettingsStore, candidates, instrument
 from wind_data import CHINA, bars_from_result, cells, get_zone, merge_bars, quote_from_result
 
@@ -18,6 +19,7 @@ class WindDashboard:
     def __init__(self, symbols=DEFAULT_SYMBOLS, poll_seconds=5, state_path=None):
         self.catalog = SecurityCatalog()
         self.store = SettingsStore(state_path)
+        self.research = ResearchStore(self.store.path.with_name("research.json") if self.store.path is not None else None)
         self.stop, self.lock = threading.Event(), threading.RLock()
         self.connected, self.message = False, '正在连接本机 Wind……'
         self.poll_seconds = max(3, poll_seconds)
@@ -55,7 +57,7 @@ class WindDashboard:
         for symbol in symbols:
             item, state = self.catalog.get(symbol), states[symbol]
             issue = state['quoteIssue'] or state['historyIssue'] if connected else message
-            item.update(quote=state['quote'], bars=state['bars'], dataIssue=issue, missingBars=state['missingBars'], dailyBars=state['dailyBars'], hourlyBars=state['hourlyBars'], calendar=state['calendar'], expectedDailyDate=state['expectedDailyDate'], swingRevision=state['swingRevision'], swingIssue=state['swingIssue'])
+            item.update(quote=state['quote'], bars=state['bars'], dataIssue=issue, missingBars=state['missingBars'], dailyBars=state['dailyBars'], hourlyBars=state['hourlyBars'], calendar=state['calendar'], expectedDailyDate=state['expectedDailyDate'], swingRevision=state['swingRevision'], swingIssue=state['swingIssue'], research=self.research.snapshot(item['windCode']))
             items.append(item)
         return {'mode':'live', 'provider':'wind-local', 'computeStrategies':True,
                 'source':'Wind 本机行情 · 5 秒轮询', 'serverTime':int(time.time()*1000),

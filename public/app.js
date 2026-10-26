@@ -110,7 +110,7 @@ function renderDetail() {
     $('#selected-action').className='trade-tag hidden'; $('#strategy-label').classList.add('hidden');
     $('#chart').innerHTML='<div class="chart-empty">添加自选后查看图表与买卖信号</div>';
     $('#chart-axis').innerHTML=''; $('#detail-stats').innerHTML=''; $('#strategy-levels').innerHTML='';
-    $('#evaluation-stats').textContent='';$('#evaluation-note').textContent='';$('#position-status').textContent='请先添加并选择证券。';$('#strategy-reason').textContent='在上方搜索名称或完整证券代码。'; $('#strategy-time').textContent=''; $('#market-rule').textContent='';return;
+    $('#research-records').textContent='';$('#research-status').textContent='请先选择证券。';$('#evaluation-stats').textContent='';$('#evaluation-note').textContent='';$('#position-status').textContent='请先添加并选择证券。';$('#strategy-reason').textContent='在上方搜索名称或完整证券代码。'; $('#strategy-time').textContent=''; $('#market-rule').textContent='';return;
   }
   state.selected = item.id;
   const signal = strategy(item);
@@ -131,7 +131,7 @@ function renderDetail() {
   const p=item.swings?.[state.profile]?.prepared.p||PROFILES[state.profile];
   $('#strategy-levels').innerHTML=signal.action?.type==='buy'&&signal.levels?`<div class="levels">${[['触发价参考',signal.levels.reference],['目标价参考',signal.levels.target],['初始风险观察',Math.max(signal.levels.drawdown,signal.levels.loss)]].map(([label,value])=>`<div><span>${label}</span><strong>${price(value,item)}</strong></div>`).join('')}</div><p class="level-note">目标${p.target*100}%；随持仓峰值上移的回撤线需填写持仓。风险位不保证成交。</p>`:'';
   $('#strategy-time').textContent=signal.action?.eventKey?`持仓参考 · 源报价 ${time(signal.action.time,true)} · 非账户同步`:signal.barTime?`60分钟收盘 ${time(signal.barTime,true)} · ${p.label}最长${p.days}个交易日`:'仅使用已收盘数据';
-  renderEvaluation(item);renderPosition(item);
+  renderEvaluation(item);renderPosition(item);renderResearch(item);
   $('#market-rule').textContent = item.rule;
 }
 
@@ -250,6 +250,21 @@ function acceptSnapshot(snapshot,connected=false){
   render();scanAlerts();
 }
 async function refresh(){const response=await fetch('/api/snapshot');if(!response.ok)throw Error('行情快照读取失败');acceptSnapshot(await response.json());}
+function renderResearch(item) {
+  const research=item.research;
+  $('#research-status').textContent=research?.message||'补充资料仅在Wind本机版接入；当前未连接Capital IQ或Bloomberg。';
+  $('#research-bloomberg').disabled=Boolean(research?.busy);
+  const labels={PE_RATIO:'市盈率',PX_TO_BOOK_RATIO:'市净率',EQY_DVD_YLD_IND:'预期股息率',CRNCY:'币种'};
+  $('#research-records').innerHTML=(research?.records||[]).map(row=>`<p><strong>${escape(row.source)} · ${escape(labels[row.field]||row.field)}</strong>：${escape(row.value)} ${escape(row.unit||'')}<br><span>${escape(row.method||'')} · 数据时点 ${escape(row.as_of||'未提供')} · 读取/导入 ${escape(row.read_at||'未提供')}</span></p>`).join('')||'<p>暂无该证券资料。CIQ网页账号不等于API授权，可先导出后导入。</p>';
+}
+$('#research-bloomberg').addEventListener('click',async()=>{
+  try{if(state.snapshot?.provider!=='wind-local')throw Error('请在Windows Wind本机版使用。');await api('/api/research/bloomberg',{id:state.selected});await refresh();toast('已提交本机Bloomberg查询。');}catch(error){toast(error.message);}
+});
+$('#research-import').addEventListener('click',()=>$('#research-file').click());
+$('#research-file').addEventListener('change',async event=>{
+  const file=event.target.files[0];if(!file)return;
+  try{if(state.snapshot?.provider!=='wind-local')throw Error('资料导入请在Windows本机版使用。');if(file.size>1500000)throw Error('CSV请小于1.5MB。');const bytes=await file.arrayBuffer();let text=new TextDecoder('utf-8').decode(bytes);if(text.includes('\ufffd'))text=new TextDecoder('gb18030').decode(bytes);const result=await api('/api/research/import',{csv:text,source:$('#research-source').value});await refresh();toast(`已导入${result.imported}项资料。`);}catch(error){toast(error.message);}finally{event.target.value='';}
+});
 function renderEvaluation(item) {
   const data=item.swings?.[state.profile],stats=data?.prepared.evaluation;
   $('#evaluation-mode').textContent=PROFILES[state.profile].label+(state.snapshot.mode==='demo'?' · 模拟样本':'');

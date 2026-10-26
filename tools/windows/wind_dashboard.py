@@ -129,6 +129,20 @@ def make_server(dashboard, port):
                     self.json(200, {'removed':value})
                 elif path == '/api/settings':
                     self.json(200, {'settings':dashboard.set_zones(data)})
+                elif path == '/api/research/import':
+                    text = data.get('csv')
+                    if not isinstance(text,str):
+                        raise ValueError('资料内容无效')
+                    self.json(200, {'imported':dashboard.research.import_csv(text,data.get('source'))})
+                elif path == '/api/research/bloomberg':
+                    value = data.get('id')
+                    if not isinstance(value,str):
+                        raise ValueError('请选择证券')
+                    item = dashboard.catalog.get(value)
+                    if item is None:
+                        raise ValueError('请先添加证券')
+                    dashboard.research.query(item['windCode'])
+                    self.json(202, {'pending':True})
                 elif path == '/api/catalog':
                     text = data.get('csv')
                     if not isinstance(text,str):
