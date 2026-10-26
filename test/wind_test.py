@@ -97,10 +97,25 @@ class LocalServerTest(unittest.TestCase):
         self.assertEqual(data['provider'], 'wind-local')
         self.assertTrue(data['computeStrategies'])
         self.assertTrue(all(item['quote'] is None for item in data['instruments']))
-        for asset in ('/', '/app.js', '/strategy.js', '/swing.js', '/positions.js', '/alerts.js', '/style.css'):
+        for asset in ('/', '/app.js', '/strategy.js', '/swing.js', '/positions.js', '/alerts.js', '/market-connection.js', '/style.css'):
             with urlopen(self.base + asset, timeout=3) as response:
                 self.assertEqual(response.status, 200)
                 self.assertTrue(response.read())
+
+    def test_unchanged_history_is_omitted_but_new_quotes_and_status_are_sent(self):
+        from urllib.parse import quote
+        with urlopen(self.base+'/api/snapshot',timeout=3) as response:first=json.load(response)
+        known={item['id']:item['historyToken'] for item in first['instruments']}
+        state=self.dashboard.states['SH.510300'];state['quote']={'price':4.2,'timestamp':1,'receivedAt':2}
+        url=self.base+'/api/snapshot?known='+quote(json.dumps(known))
+        with urlopen(url,timeout=3) as response:second=json.load(response)
+        item=next(item for item in second['instruments'] if item['id']=='SH.510300')
+        self.assertTrue(item['historyOmitted']);self.assertNotIn('dailyBars',item);self.assertEqual(item['quote']['price'],4.2)
+        self.assertIn('lastQuoteReadAt',second['status'])
+        state['historyToken']='updated'
+        with urlopen(url,timeout=3) as response:third=json.load(response)
+        item=next(item for item in third['instruments'] if item['id']=='SH.510300')
+        self.assertFalse(item.get('historyOmitted',False));self.assertIn('dailyBars',item)
 
     def test_local_server_refuses_foreign_hosts_and_private_files(self):
         request = Request(self.base + '/api/snapshot', headers={'Host': 'example.com'})

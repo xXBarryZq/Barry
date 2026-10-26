@@ -5,9 +5,11 @@ import importlib
 import queue
 import threading
 import time
+import uuid
 from datetime import datetime, timedelta
 
 from swing_data import fetch_history
+from history_worker import HistoryWorker
 from research import ResearchStore
 from security_catalog import SecurityCatalog, SettingsStore, candidates, instrument, normalize_query
 from wind_data import CHINA, bars_from_result, cells, get_zone, merge_bars, quote_from_result, finite
@@ -21,6 +23,9 @@ class WindDashboard:
         self.store = SettingsStore(state_path)
         self.research = ResearchStore(self.store.path.with_name("research.json") if self.store.path is not None else None)
         self.stop, self.lock = threading.Event(), threading.RLock()
+        self.instance_id=uuid.uuid4().hex
+        self.last_quote_read=None;self.last_quote_attempt=None;self.quote_polls=0
+        self.history_cursor=0;self.directory_due=0
         self.connected, self.message = False, '正在连接本机 Wind……'
         self.poll_seconds = max(3, poll_seconds)
         self.commands, self.pending, self.resolve_errors = queue.Queue(), set(), {}
@@ -44,7 +49,7 @@ class WindDashboard:
 
     @staticmethod
     def empty_state():
-        return {'quote':None, 'bars':[], 'quoteIssue':'', 'historyIssue':'', 'missingBars':0, 'dailyBars':[], 'hourlyBars':[], 'calendar':[], 'expectedDailyDate':None, 'swingRevision':0, 'swingIssue':'正在补充日线和60分钟历史。'}
+        return {'quote':None, 'bars':[], 'quoteIssue':'', 'historyIssue':'', 'missingBars':0, 'historyToken':uuid.uuid4().hex, 'historyLoading':False, 'dailyBars':[], 'hourlyBars':[], 'calendar':[], 'expectedDailyDate':None, 'swingRevision':0, 'swingIssue':'正在补充日线和60分钟历史。'}
 
     def set_status(self, connected, message):
         with self.lock:
@@ -59,11 +64,11 @@ class WindDashboard:
         for symbol in symbols:
             item, state = self.catalog.get(symbol), states[symbol]
             issue = state['quoteIssue'] or state['historyIssue'] if connected else message
-            item.update(quote=state['quote'], bars=state['bars'], dataIssue=issue, missingBars=state['missingBars'], dailyBars=state['dailyBars'], hourlyBars=state['hourlyBars'], calendar=state['calendar'], expectedDailyDate=state['expectedDailyDate'], swingRevision=state['swingRevision'], swingIssue=state['swingIssue'], research=self.research.snapshot(item['windCode']))
+            item.update(quote=state['quote'], bars=state['bars'], dataIssue=issue, missingBars=state['missingBars'], dailyBars=state['dailyBars'], hourlyBars=state['hourlyBars'], calendar=state['calendar'], expectedDailyDate=state['expectedDailyDate'], swingRevision=state['swingRevision'], swingIssue=state['swingIssue'], historyToken=state['historyToken'], historyLoading=state['historyLoading'], research=self.research.snapshot(item['windCode']))
             items.append(item)
-        return {'mode':'live', 'provider':'wind-local', 'computeStrategies':True,
+        return {'instanceId':self.instance_id, 'mode':'live', 'provider':'wind-local', 'computeStrategies':True,
                 'source':'Wind 本机行情 · 5 秒轮询', 'serverTime':int(time.time()*1000),
-                'status':{'connected':connected,'message':message}, 'instruments':items,
+                'status':{'connected':connected,'message':message,'lastQuoteReadAt':self.last_quote_read,'lastQuoteAttemptAt':self.last_quote_attempt,'quotePolls':self.quote_polls,'historyLoading':any(state['historyLoading'] for state in states.values())}, 'instruments':items,
                 'editableWatchlist':True, 'directoryStatus':self.catalog.a_share_status,
                 'settings':zones}
 
@@ -252,6 +257,8 @@ class WindDashboard:
 
     def refresh_quotes(self, api, unused=None):
         with self.lock:
+            self.last_quote_attempt=int(time.time()*1000)
+            self.quote_polls+=1
             instruments = [self.catalog.get(symbol) for symbol in self.symbols]
         groups = {'cn':[item for item in instruments if item['market'] != 'us'],
                   'us':[item for item in instruments if item['market'] == 'us']}
@@ -300,6 +307,7 @@ class WindDashboard:
                     state['quoteIssue'] = '源行情时间倒退，保留上次报价并暂停买卖标记。'
                 else:
                     state['quote'], state['quoteIssue'] = quote, issue
+                    self.last_quote_read=quote['receivedAt']
         return True
 
     def refresh_history(self, api, symbol):
@@ -337,7 +345,9 @@ class WindDashboard:
             data = fetch_history(api,item,previous,zone)
             with self.lock:
                 if symbol in self.states:
-                    self.states[symbol].update(**data,swingIssue='',historyIssue='',swingRevision=previous['swingRevision']+1)
+                    changed=any(self.states[symbol].get(key)!=value for key,value in data.items())
+                    self.states[symbol].update(**data,swingIssue='',historyIssue='',historyLoading=False,swingRevision=previous['swingRevision']+int(changed))
+                    if changed:self.states[symbol]['historyToken']=uuid.uuid4().hex
             return True
         except Exception as error:
             message = str(error) if isinstance(error,ValueError) else '日线/60分钟历史读取失败，请核对 WSD、WSI 和交易日历权限。'
@@ -346,46 +356,88 @@ class WindDashboard:
                     self.states[symbol]['swingIssue'] = message
             return False
 
-    def run(self):
-        api = None
-        try:
-            api = importlib.import_module('WindPy').w
-            result = api.start()
-            if getattr(result,'ErrorCode',None)!=0 or not api.isconnected():
-                self.set_status(False,'Wind 连接失败，请登录客户端后重启看板。')
-                return
-            self.set_status(True,'Wind 已连接。仅在规则触发且数据可用时显示买入/卖出；时间口径见设置。')
-            self.load_name_directory(api)
-            next_quote = 0
-            while not self.stop.is_set():
-                if not api.isconnected():
-                    self.set_status(False,'Wind 已断开，请登录客户端后重启看板。')
-                    return
-                self.resolve_commands(api)
-                if time.monotonic() >= next_quote:
-                    self.refresh_quotes(api)
-                    next_quote = time.monotonic()+self.poll_seconds
+    def service_history(self, worker):
+        result=worker.poll()
+        if result:
+            job=result['job']
+            if job['kind']=='directory':
+                if 'data' in result:
+                    count=self.catalog.import_rows(result['data']['directory'])
+                    self.catalog.a_share_status=f'已加载{count}个Wind A股名称；股票和ETF可用六位代码。'
+                    self.directory_due=float('inf')
+                else:
+                    self.catalog.a_share_status=result['error']
+                    self.directory_due=time.monotonic()+300
+            else:
+                symbol=job['symbol']
                 with self.lock:
-                    symbols = list(self.symbols)
-                for symbol in symbols:
-                    if self.stop.is_set():
-                        break
-                    if time.monotonic() >= self.history_due.get(symbol,0):
-                        success = self.refresh_swing_history(api,symbol)
-                        self.history_due[symbol] = time.monotonic()+(60 if success else 300)
-                        # Long initial history requests must not starve quote polling for other symbols.
-                        if time.monotonic() >= next_quote:
-                            self.refresh_quotes(api)
-                            next_quote = time.monotonic()+self.poll_seconds
-                        self.resolve_commands(api)
+                    state=self.states.get(symbol)
+                    # Removed/re-added symbols or timezone resets cannot consume an old response.
+                    if state is not None and state['historyToken']==job['token']:
+                        state['historyLoading']=False
+                        if 'data' in result:
+                            data=result['data']
+                            changed=any(state.get(key)!=value for key,value in data.items())
+                            state.update(**data,swingIssue='',historyIssue='')
+                            if changed:
+                                state['swingRevision']+=1;state['historyToken']=uuid.uuid4().hex
+                        else:
+                            state['swingIssue']=result['error']
+                        self.history_due[symbol]=time.monotonic()+(60 if 'data' in result else 300)
+        if worker.job is not None or self.stop.is_set():
+            return
+        if time.monotonic()>=self.directory_due:
+            worker.submit({'kind':'directory'})
+            return
+        with self.lock:
+            symbols=list(self.symbols)
+        for offset in range(len(symbols)):
+            index=(self.history_cursor+offset)%len(symbols)
+            symbol=symbols[index];item=self.catalog.get(symbol)
+            if time.monotonic()<self.history_due.get(symbol,0):continue
+            if item['market']=='futures' or (item['market']=='us' and self.zones['usBarZone']=='unknown'):
+                with self.lock:
+                    if symbol in self.states:
+                        self.states[symbol]['swingIssue']='期货波段规则尚未验证。' if item['market']=='futures' else 'Wind美股历史时间口径尚未确认。'
+                        self.history_due[symbol]=time.monotonic()+300
+                continue
+            with self.lock:
+                state=self.states.get(symbol)
+                if state is None:continue
+                prior={key:copy.deepcopy(state[key]) for key in ('dailyBars','hourlyBars','calendar','expectedDailyDate')}
+                job={'kind':'history','symbol':symbol,'token':state['historyToken'],'item':item,'state':prior,
+                     'zone':self.zones['usBarZone'] if item['market']=='us' else 'Asia/Shanghai'}
+                if worker.submit(job):
+                    state['historyLoading']=True;self.history_cursor=(index+1)%len(symbols)
+                break
+
+    def run(self, history_worker=None):
+        api=None;worker=history_worker
+        try:
+            api=importlib.import_module('WindPy').w
+            worker=worker or HistoryWorker()
+            next_quote=0
+            while not self.stop.is_set():
+                try:
+                    if not self.connected or not api.isconnected():
+                        self.set_status(False,'Wind未连接，正在自动重连；旧报价不用于新信号。')
+                        result=api.start()
+                        if getattr(result,'ErrorCode',None)!=0 or not api.isconnected():
+                            self.stop.wait(5);continue
+                        next_quote=0
+                    self.set_status(True,'Wind已连接。报价持续轮询，日线和60分钟历史在独立进程加载。')
+                    if time.monotonic()>=next_quote:
+                        self.refresh_quotes(api);next_quote=time.monotonic()+self.poll_seconds
+                    self.resolve_commands(api)
+                    self.service_history(worker)
+                except Exception as error:
+                    self.set_status(False,'Wind接口异常（'+type(error).__name__+'），5秒后自动重试。')
+                    self.stop.wait(5)
                 self.stop.wait(.2)
         except ImportError:
-            self.set_status(False,'当前 Python 找不到 WindPy，请使用已验证连接成功的 Python。')
-        except Exception as error:
-            self.set_status(False,'Wind 接口异常（'+type(error).__name__+'），请检查连接后重启。')
+            self.set_status(False,'当前Python找不到WindPy，请使用已验证连接成功的Python。')
         finally:
+            if worker is not None:worker.close()
             if api is not None:
-                try:
-                    api.stop()
-                except Exception:
-                    pass
+                try:api.stop()
+                except Exception:pass

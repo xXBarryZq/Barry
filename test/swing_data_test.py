@@ -49,27 +49,34 @@ class SwingDataTest(unittest.TestCase):
                 def tdays(self,*args):return SimpleNamespace(ErrorCode=-1,Data=[])
             fetch_history(Broken(),{'market':'cn','windCode':'600519.SH'},{},CHINA)
 
-    def test_run_keeps_new_wind_calls_on_main_thread_and_stops_cleanly(self):
-        board=WindDashboard(symbols=('SH.510300',))
+    def test_run_keeps_quote_sdk_calls_on_main_thread_and_delegates_history(self):
+        board=WindDashboard(symbols=('SH.510300',));board.directory_due=float('inf')
         calls=[]
-        def record(name):
-            self.assertIs(threading.current_thread(),threading.main_thread())
-            calls.append(name)
         class API:
-            def start(self):record('start');return SimpleNamespace(ErrorCode=0)
-            def stop(self):record('stop')
-            def isconnected(self):record('connected');return True
+            def start(self):calls.append('start');return SimpleNamespace(ErrorCode=0)
+            def stop(self):calls.append('stop')
+            def isconnected(self):return True
             def wsq(self,codes,fields):
-                record('wsq');now=datetime.now(CHINA)
+                self_test.assertIs(threading.current_thread(),threading.main_thread())
+                calls.append('wsq');now=datetime.now(CHINA)
                 values=[int(now.strftime('%Y%m%d'))] if fields=='rt_date' else [100,99,10,int(now.strftime('%H%M%S'))]
                 return SimpleNamespace(ErrorCode=0,Fields=fields.upper().split(','),Data=[[v] for v in values],Codes=[codes])
-            def tdays(self,*args):record('tdays');return SimpleNamespace(ErrorCode=0,Data=[[datetime(2026,10,23)]])
-            def wsd(self,*args):record('wsd');return result([datetime(2026,10,23)],[[100,102,99,101,100]])
-            def wsi(self,*args):record('wsi');board.stop.set();return result([datetime(2026,10,26,10,30)],[[101,103,100,102,100]])
-        with patch.dict(sys.modules,{'WindPy':SimpleNamespace(w=API())}):board.run()
+        class Worker:
+            job=None
+            closed=False
+            def submit(self,job):
+                self_test.assertEqual(job['kind'],'history');self.job=job;return True
+            def poll(self):
+                if self.job is None:return None
+                job,self.job=self.job,None;board.stop.set()
+                return {'job':job,'data':{'dailyBars':[],'hourlyBars':[],'calendar':['2026-10-23'],'expectedDailyDate':'2026-10-23'}}
+            def close(self):self.closed=True
+        self_test=self;worker=Worker()
+        with patch.dict(sys.modules,{'WindPy':SimpleNamespace(w=API())}):board.run(history_worker=worker)
         self.assertEqual(board.states['SH.510300']['swingIssue'],'')
         self.assertEqual(board.states['SH.510300']['swingRevision'],1)
-        self.assertTrue(all(method in calls for method in ('start','tdays','wsd','wsi','stop')))
+        self.assertTrue(worker.closed)
+        self.assertTrue(all(method in calls for method in ('start','wsq','stop')))
 
     def test_unknown_us_time_and_futures_do_not_fetch_or_enable_signals(self):
         board=WindDashboard()

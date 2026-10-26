@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[2]
 FILES = {'/': ROOT / 'public/index.html', '/app.js': ROOT / 'public/app.js',
          '/style.css': ROOT / 'public/style.css', '/favicon.svg': ROOT / 'public/favicon.svg',
          '/strategy.js': ROOT / 'src/strategy.js', '/swing.js': ROOT / 'src/swing.js',
-         '/alerts.js': ROOT / 'public/alerts.js', '/positions.js': ROOT / 'src/positions.js'}
+         '/market-connection.js': ROOT / 'public/market-connection.js', '/alerts.js': ROOT / 'public/alerts.js', '/positions.js': ROOT / 'src/positions.js'}
 
 
 def make_server(dashboard, port):
@@ -42,7 +42,10 @@ def make_server(dashboard, port):
         def json(self, status, data):
             body = json.dumps(data, ensure_ascii=False, allow_nan=False).encode('utf-8')
             self.write_headers(status, 'application/json; charset=utf-8', len(body))
-            self.wfile.write(body)
+            try:
+                self.wfile.write(body)
+            except (BrokenPipeError,ConnectionResetError):
+                self.close_connection=True
 
         def local_request(self):
             hosts = {'127.0.0.1:' + str(self.server.server_port), 'localhost:' + str(self.server.server_port)}
@@ -64,7 +67,8 @@ def make_server(dashboard, port):
                 self.connection.settimeout(15)
                 self.write_headers(200, 'text/event-stream; charset=utf-8')
                 try:
-                    self.wfile.write(b'retry: 3000\n')
+                    self.wfile.write(b'retry: 3000\n: connected\n\n')
+                    self.wfile.flush()
                     while not dashboard.stop.is_set():
                         data = json.dumps(dashboard.snapshot(), ensure_ascii=False, allow_nan=False)
                         self.wfile.write(('data: ' + data + '\n\n').encode('utf-8'))
@@ -77,16 +81,28 @@ def make_server(dashboard, port):
                 return
             if path in ('/api/health', '/api/snapshot'):
                 snapshot = dashboard.snapshot()
+                if path.endswith('snapshot'):
+                    params = parse_qs(urlsplit(self.path).query)
+                    try:
+                        known = json.loads(params.get('known',['{}'])[0])
+                    except (ValueError,TypeError):
+                        known = {}
+                    if not isinstance(known,dict):
+                        known = {}
+                    for item in snapshot['instruments']:
+                        if item.get('historyToken') and known.get(item['id']) == item['historyToken']:
+                            for field in ('bars','dailyBars','hourlyBars','calendar'):
+                                item.pop(field,None)
+                            item['historyOmitted'] = True
                 data = snapshot if path.endswith('snapshot') else {
                     'status': 'ok', 'mode': 'live', 'provider': 'wind-local',
                     'providerConnected': snapshot['status']['connected'],
                     'instruments': len(snapshot['instruments']),
                     'quotes': sum(item['quote'] is not None for item in snapshot['instruments']),
+                    'providerStatus': snapshot['status'],
                     'timestampedQuotes': sum(item['quote'] is not None and item['quote']['timestamp'] is not None for item in snapshot['instruments']),
                 }
-                body = json.dumps(data, ensure_ascii=False, allow_nan=False).encode('utf-8')
-                self.write_headers(200, 'application/json; charset=utf-8', len(body))
-                self.wfile.write(body)
+                self.json(200,data)
                 return
             if path in FILES:
                 body = FILES[path].read_bytes()

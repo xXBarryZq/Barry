@@ -1,19 +1,21 @@
 import { prepareSwing, currentSwing, PROFILES, validBar } from '/swing.js';
 import { updatePosition } from '/positions.js';
 import { AlertEngine, playChime } from '/alerts.js';
+import { MarketConnection } from '/market-connection.js';
 
 const $ = selector => document.querySelector(selector);
 const marketNames = { cn: 'A 股市场', futures: '国内商品期货', us: '美股市场' };
 const marketZones = { cn: 'Asia/Shanghai', futures: 'Asia/Shanghai', us: 'America/New_York' };
 const escape = value => String(value).replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
 const readStored = (key, fallback) => { try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; } };
-const state = { profile:'short', snapshot: null, receivedAt: 0, connected: false, lastEventAt: performance.now(), market: 'all', selected: readStored('barry-selected', 'SH.510300') };
+const state = { profile:'short', processingIssue:'', transportIssue:'', snapshot: null, receivedAt: 0, connected: false, market: 'all', selected: readStored('barry-selected', 'SH.510300') };
 const save = (key, value) => { try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* Private browsing may disable storage. */ } };
 const time = (value, date = false, zone = 'Asia/Shanghai') => value ? new Intl.DateTimeFormat('zh-CN', { timeZone: zone, ...(date ? { month: '2-digit', day: '2-digit' } : {}), hour: '2-digit', minute: '2-digit', second: date ? '2-digit' : undefined, hour12: false }).format(value) : '—';
 const now = () => state.snapshot ? state.snapshot.serverTime + (performance.now() - state.receivedAt) : Date.now();
-const fresh = item => Boolean(state.connected && !item.dataIssue && item.quote && Number.isFinite(item.quote.timestamp) && item.quote.timestamp <= now() + 10_000 && now() - item.quote.timestamp <= 90_000);
+const fresh = item => Boolean(state.connected && !state.processingIssue && !item.dataIssue && item.quote && Number.isFinite(item.quote.timestamp) && item.quote.timestamp <= now() + 10_000 && now() - item.quote.timestamp <= 90_000);
 const strategy = (item,mode=state.profile) => {
   const signal=item.swings?.[mode]?.current || {action:null,reason:'等待日线和60分钟历史。'};
+  if(state.processingIssue)return {action:null,reason:state.processingIssue};
   return fresh(item)?signal:{action:null,reason:state.connected?'行情过期或数据待核对，暂停提醒。':'行情连接中断，暂停提醒。'};
 };
 const riskSettings=readStored('barry-swing-risk',{});
@@ -147,10 +149,11 @@ function render() {
   if (!state.snapshot) return;
   const demo = state.snapshot.mode === 'demo';
   const disconnected = !state.connected;
-  $('#data-banner').classList.toggle('live-banner', !demo && !disconnected);
-  $('#data-banner').innerHTML = `<span class="banner-icon">${disconnected ? '!' : demo ? 'D' : '↗'}</span><div><strong>${disconnected ? '连接已中断 · 策略判断已暂停' : demo ? '模拟体验模式 · 不是实际行情' : '外部行情模式 · 请核对数据服务的市场权限和延迟'}</strong><span>${disconnected ? '画面保留最近收到的数据，恢复连接后自动更新。' : demo ? '所有价格均由程序生成，仅用于体验界面与验证规则；接入你的行情服务后才能跟踪真实市场。' : '显示源数据时间；超过 90 秒未更新的品种停止策略判断。行情接入不等于交易授权。'}</span></div>`;
-  if (!demo && !disconnected && state.snapshot.status?.message) {
-    $('#data-banner div > span').textContent = state.snapshot.status.message;
+  const providerDown=!demo&&state.snapshot.status?.connected===false;
+  $('#data-banner').classList.toggle('live-banner', !demo && !disconnected && !providerDown && !state.processingIssue);
+  $('#data-banner').innerHTML = `<span class="banner-icon">${disconnected||providerDown||state.processingIssue ? '!' : demo ? 'D' : '↗'}</span><div><strong>${disconnected ? '本机看板暂未响应 · 正在自动重试' : state.processingIssue ? '行情数据处理失败 · 策略已暂停' : providerDown ? 'Wind连接中断 · 正在自动重连' : demo ? '模拟体验模式 · 不是实际行情' : '外部行情模式 · 请核对数据服务的市场权限和延迟'}</strong><span>${disconnected ? escape(state.transportIssue)||'保留最近画面；连接恢复后自动继续更新，无需刷新网页。' : state.processingIssue ? escape(state.processingIssue) : demo ? '所有价格均由程序生成，仅用于体验界面与验证规则；接入你的行情服务后才能跟踪真实市场。' : '显示源数据时间；超过 90 秒未更新的品种停止策略判断。行情接入不等于交易授权。'}</span></div>`;
+  if (!demo && !disconnected && !state.processingIssue && state.snapshot.status?.message) {
+    $('#data-banner div > span').textContent = state.snapshot.status.message+(state.snapshot.status.lastQuoteReadAt?` 最近读取报价 ${time(state.snapshot.status.lastQuoteReadAt,true)}；源时间未更新时仍暂停对应信号。`:'');
   }
   $('#source-label').textContent = state.snapshot.source;
   $('#directory-status').textContent=state.snapshot.directoryStatus || '输入代码或名称查找证券，点击添加开始读取行情。';
@@ -236,7 +239,7 @@ $('#export-button').addEventListener('click', () => {
 function setConnection(connected) {
   state.connected = connected;
   $('#connection-dot').classList.toggle('connected', connected);
-  $('#connection-text').textContent = connected ? '行情通道已连接' : '连接中断 · 正在重连';
+  $('#connection-text').textContent = connected ? '网页已连接 · 自动更新' : '看板暂未响应 · 自动重试';
 }
 async function api(path,body){
   const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
@@ -245,12 +248,13 @@ async function api(path,body){
 function acceptSnapshot(snapshot,connected=false){
   state.snapshot=snapshot;
   computeSwings(snapshot);
+  state.processingIssue='';state.transportIssue='';
   if(!snapshot.instruments.some(item=>item.id===state.selected))state.selected=snapshot.instruments[0]?.id||'';
   state.receivedAt=performance.now();
-  if(connected){state.lastEventAt=state.receivedAt;setConnection(true);}
+  if(connected)setConnection(true);
   render();scanAlerts();
 }
-async function refresh(){const response=await fetch('/api/snapshot');if(!response.ok)throw Error('行情快照读取失败');acceptSnapshot(await response.json());}
+async function refresh(){const frame=await connection.refresh();if(!frame)throw Error('本机看板暂未响应，正在自动重试。');}
 function renderResearch(item) {
   const research=item.research;
   $('#research-status').textContent=research?.message||'补充资料仅在Wind本机版接入；当前未连接Capital IQ或Bloomberg。';
@@ -340,28 +344,17 @@ $('#alert-test').addEventListener('click',async()=>{
 });
 $('#clear-alerts').addEventListener('click',()=>{history.splice(0);save('barry-alert-history',history);renderAlertHistory();});
 alertStatus(alertPrefs.enabled?`已开启；只提醒之后的新信号。${alertPrefs.sound?'重新打开网页后，请点测试按钮激活声音。':''}`:'提醒关闭；可分别启用声音和桌面弹窗。');renderAlertHistory();
-let events;
-function connect() {
-  state.lastEventAt = performance.now();
-  events = new EventSource('/api/events');
-  events.onopen = () => { state.lastEventAt = performance.now(); };
-  events.onmessage = event => {
-    try {
-      acceptSnapshot(JSON.parse(event.data),true);
-    } catch { setConnection(false); render(); toast('行情数据格式异常，请刷新后重试。'); }
-  };
-  events.onerror = () => { setConnection(false); render(); };
-}
-connect();
+const connection=new MarketConnection({
+  onSnapshot:frame=>acceptSnapshot(frame,true),
+  onConnection:connected=>{const changed=state.connected!==connected;setConnection(connected);if(changed){try{render();}catch{}}},
+  onError:(message,detail)=>{if(detail?.processing)state.processingIssue=message;else state.transportIssue=message;try{render();}catch{$('#connection-text').textContent=message;}},
+});
+connection.start();
+window.addEventListener('pagehide',()=>connection.stop());
+window.addEventListener('pageshow',()=>connection.start());
 let freshnessKey = '';
 setInterval(() => {
   $('#clock').textContent = new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(Date.now());
-  if (performance.now() - state.lastEventAt > 15_000) {
-    setConnection(false);
-    render();
-    events.close();
-    connect();
-  }
   if (state.snapshot) {
     const key = state.snapshot.instruments.map(item => fresh(item) ? '1' : '0').join('');
     if (key !== freshnessKey) { freshnessKey = key; render(); }
