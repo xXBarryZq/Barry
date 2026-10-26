@@ -7,6 +7,7 @@ import threading
 import time
 from datetime import datetime, timedelta
 
+from swing_data import fetch_history
 from security_catalog import SecurityCatalog, SettingsStore, candidates, instrument
 from wind_data import CHINA, bars_from_result, cells, get_zone, merge_bars, quote_from_result
 
@@ -39,7 +40,7 @@ class WindDashboard:
 
     @staticmethod
     def empty_state():
-        return {'quote':None, 'bars':[], 'quoteIssue':'', 'historyIssue':'', 'missingBars':0}
+        return {'quote':None, 'bars':[], 'quoteIssue':'', 'historyIssue':'', 'missingBars':0, 'dailyBars':[], 'hourlyBars':[], 'calendar':[], 'expectedDailyDate':None, 'swingRevision':0, 'swingIssue':'正在补充日线和60分钟历史。'}
 
     def set_status(self, connected, message):
         with self.lock:
@@ -54,7 +55,7 @@ class WindDashboard:
         for symbol in symbols:
             item, state = self.catalog.get(symbol), states[symbol]
             issue = state['quoteIssue'] or state['historyIssue'] if connected else message
-            item.update(quote=state['quote'], bars=state['bars'], dataIssue=issue, missingBars=state['missingBars'])
+            item.update(quote=state['quote'], bars=state['bars'], dataIssue=issue, missingBars=state['missingBars'], dailyBars=state['dailyBars'], hourlyBars=state['hourlyBars'], calendar=state['calendar'], expectedDailyDate=state['expectedDailyDate'], swingRevision=state['swingRevision'], swingIssue=state['swingIssue'])
             items.append(item)
         return {'mode':'live', 'provider':'wind-local', 'computeStrategies':True,
                 'source':'Wind 本机行情 · 5 秒轮询', 'serverTime':int(time.time()*1000),
@@ -239,6 +240,28 @@ class WindDashboard:
                 self.states[symbol].update(bars=merge_bars(existing,bars,seen),missingBars=missing,historyIssue='')
         return True
 
+    def refresh_swing_history(self, api, symbol):
+        item = self.catalog.get(symbol)
+        try:
+            if item['market'] == 'futures':
+                raise ValueError('期货波段规则尚未完成夜盘与换月验证。')
+            zone = get_zone(self.zones['usBarZone']) if item['market']=='us' else CHINA
+            if zone is None:
+                raise ValueError('Wind 美股历史时间口径尚未确认。')
+            with self.lock:
+                previous = copy.deepcopy(self.states.get(symbol, self.empty_state()))
+            data = fetch_history(api,item,previous,zone)
+            with self.lock:
+                if symbol in self.states:
+                    self.states[symbol].update(**data,swingIssue='',historyIssue='',swingRevision=previous['swingRevision']+1)
+            return True
+        except Exception as error:
+            message = str(error) if isinstance(error,ValueError) else '日线/60分钟历史读取失败，请核对 WSD、WSI 和交易日历权限。'
+            with self.lock:
+                if symbol in self.states:
+                    self.states[symbol]['swingIssue'] = message
+            return False
+
     def run(self):
         api = None
         try:
@@ -264,8 +287,13 @@ class WindDashboard:
                     if self.stop.is_set():
                         break
                     if time.monotonic() >= self.history_due.get(symbol,0):
-                        success = self.refresh_history(api,symbol)
+                        success = self.refresh_swing_history(api,symbol)
                         self.history_due[symbol] = time.monotonic()+(60 if success else 300)
+                        # Long initial history requests must not starve quote polling for other symbols.
+                        if time.monotonic() >= next_quote:
+                            self.refresh_quotes(api)
+                            next_quote = time.monotonic()+self.poll_seconds
+                        self.resolve_commands(api)
                 self.stop.wait(.2)
         except ImportError:
             self.set_status(False,'当前 Python 找不到 WindPy，请使用已验证连接成功的 Python。')

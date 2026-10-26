@@ -97,7 +97,7 @@ class LocalServerTest(unittest.TestCase):
         self.assertEqual(data['provider'], 'wind-local')
         self.assertTrue(data['computeStrategies'])
         self.assertTrue(all(item['quote'] is None for item in data['instruments']))
-        for asset in ('/', '/app.js', '/strategy.js', '/style.css'):
+        for asset in ('/', '/app.js', '/strategy.js', '/swing.js', '/positions.js', '/alerts.js', '/style.css'):
             with urlopen(self.base + asset, timeout=3) as response:
                 self.assertEqual(response.status, 200)
                 self.assertTrue(response.read())

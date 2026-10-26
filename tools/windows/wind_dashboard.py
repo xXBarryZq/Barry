@@ -18,7 +18,8 @@ ROOT = Path(__file__).resolve().parents[2]
 
 FILES = {'/': ROOT / 'public/index.html', '/app.js': ROOT / 'public/app.js',
          '/style.css': ROOT / 'public/style.css', '/favicon.svg': ROOT / 'public/favicon.svg',
-         '/strategy.js': ROOT / 'src/strategy.js'}
+         '/strategy.js': ROOT / 'src/strategy.js', '/swing.js': ROOT / 'src/swing.js',
+         '/alerts.js': ROOT / 'public/alerts.js', '/positions.js': ROOT / 'src/positions.js'}
 
 
 def make_server(dashboard, port):

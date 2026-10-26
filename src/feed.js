@@ -1,3 +1,4 @@
+import { demoSwing } from './demo-swing.js';
 import { instruments, publicInstrument } from './instruments.js';
 import { analyze, MINUTE, STALE_AFTER } from './strategy.js';
 
@@ -45,6 +46,7 @@ export class Feed {
         price *= 1 + (random() - 0.48 + (index % 3 - 1) * 0.12) * 0.002;
         state.bars.push({ time: minute - i * MINUTE, open, high: Math.max(open, price) * (1 + random() * 0.0008), low: Math.min(open, price) * (1 - random() * 0.0008), close: price, volume: Math.floor(100 + random() * 8000) });
       }
+      state.swing=demoSwing(instrument.base,now,index);
       state.quote = { timestamp: now, price, previousClose: instrument.base, volume: state.bars.reduce((sum, bar) => sum + bar.volume, 0) };
     });
   }
@@ -95,7 +97,7 @@ export class Feed {
   snapshot(now = Date.now()) {
     return { mode: this.mode, editableWatchlist:this.mode==='demo', directoryStatus:'模拟名称目录', source: this.mode === 'demo' ? '内置模拟行情 · 非真实市场数据' : '外部行情接口 · 授权与延迟由数据服务决定', serverTime: now, instruments: [...this.active].map(id => this.catalog.get(id)).map(instrument => {
       const state = this.states.get(instrument.id);
-      return { ...publicInstrument(instrument), quote: state.quote, stale: !state.quote || now - state.quote.timestamp > STALE_AFTER, bars: state.bars, strategy: analyze(instrument, state.quote, state.bars, now) };
+      return { ...publicInstrument(instrument), ...state.swing, quote: state.quote, stale: !state.quote || now - state.quote.timestamp > STALE_AFTER, bars: state.bars, strategy: analyze(instrument, state.quote, state.bars, now) };
     }) };
   }
 }
