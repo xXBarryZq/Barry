@@ -28,8 +28,8 @@ export function setups(daily, hours, p) {
       const volume=average>0&&bar.volume>=average*1.2;
       const type=volume&&fast>slow&&bar.close>resistance?'buy':volume&&fast<slow&&bar.close<support?'sell':null;
       if(type)setup={type,label:type==='buy'?'买入':'卖出',time:bar.time,barTime:bar.time,price:bar.close,resistance,support,mode:p.id,
-        reason:`${p.label}：昨日及此前日线 EMA${p.fast}${type==='buy'?'高于':'低于'}EMA${p.slow}；60分钟收盘${type==='buy'?'突破':'跌破'}此前${p.breakout}根${type==='buy'?'高点':'低点'}；量≥均量1.2倍。`,
-        note:type==='sell'?'供已有持仓减仓参考，不表示可做空。':'下一根可交易时段寻找成交机会；历史触发价不代表成交价。'};
+        reason:`${p.label}：日线EMA${p.fast}${type==='buy'?'高于':'低于'}EMA${p.slow}；60m收盘${type==='buy'?'突破':'跌破'}前${p.breakout}根${type==='buy'?'高点':'低点'}；量≥均量1.2×。`,
+        note:type==='sell'?'仅供已有持仓减仓参考，不可做空。':'下一根可交易时段寻找机会；触发价≠成交价。'};
     }
     result.push(setup);
   }
@@ -103,12 +103,12 @@ export function prepareSwing(item, mode, settings={}) {
   return {p,signals,evaluation,last:signals.at(-1),lastBar:hours.at(-1),dailyLast:daily.at(-1)};
 }
 export function currentSwing(item, prepared, now=Date.now()) {
-  const base={action:null,levels:null,barTime:prepared.lastBar?.time,reason:'当前未同时满足日线趋势、60分钟突破与放量条件。',period:'日线 + 60分钟'};
-  if(item.market==='futures')return {...base,reason:'期货换月、夜盘交易日与杠杆口径待验证，波段提醒和成功率暂不启用。'};
+  const base={action:null,levels:null,barTime:prepared.lastBar?.time,reason:'当前未同时满足日线趋势、60分钟突破与放量。',period:'日线 + 60分钟'};
+  if(item.market==='futures')return {...base,reason:'期货换月/夜盘/杠杆口径待验证，波段提醒暂不启用。'};
   if(item.dataIssue||item.swingIssue)return {...base,reason:item.dataIssue||item.swingIssue};
-  if(!item.quote||!Number.isFinite(item.quote.timestamp)||item.quote.timestamp>now+10_000||now-item.quote.timestamp>90_000)return {...base,reason:'行情过期或时间未确认，暂停提醒。'};
-  if(!item.expectedDailyDate||prepared.dailyLast?.date!==item.expectedDailyDate)return {...base,reason:'日线未覆盖上一交易日，暂停提醒。'};
-  if(!validBar(prepared.lastBar)||now-prepared.lastBar.time>90*60_000||prepared.lastBar.time>now)return {...base,reason:'等待新鲜、完整且已收盘的60分钟数据。'};
+  if(!item.quote||!Number.isFinite(item.quote.timestamp)||item.quote.timestamp>now+10_000||now-item.quote.timestamp>90_000)return {...base,reason:'行情过期或时间未确认，已暂停。'};
+  if(!item.expectedDailyDate||prepared.dailyLast?.date!==item.expectedDailyDate)return {...base,reason:'日线未覆盖上一交易日，已暂停。'};
+  if(!validBar(prepared.lastBar)||now-prepared.lastBar.time>90*60_000||prepared.lastBar.time>now)return {...base,reason:'等待新鲜且已收盘的60分钟数据。'};
   const signal=prepared.last;
   const beyond=signal&&(signal.type==='buy'?item.quote.price>signal.resistance:item.quote.price<signal.support);
   if(!beyond)return base;

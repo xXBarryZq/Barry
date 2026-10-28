@@ -8,6 +8,61 @@ const $ = selector => document.querySelector(selector);
 const marketNames = { cn: 'A 股市场', futures: '国内商品期货', us: '美股市场' };
 const marketZones = { cn: 'Asia/Shanghai', futures: 'Asia/Shanghai', us: 'America/New_York' };
 const escape = value => String(value).replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
+
+const tipRow = (k, v, mod='') => v == null || v === '' ? '' : `<div class="tip-row${mod ? ` ${mod}` : ''}"><span class="tip-k">${k}</span><span class="tip-v">${escape(v)}</span></div>`;
+const tipStack = rows => `<div class="tip-stack">${rows.filter(Boolean).join('')}</div>`;
+function formatStrategyTips(item, signal) {
+  const p = item?.swings?.[state.profile]?.prepared?.p || PROFILES[state.profile];
+  const rule = `${p.label} · EMA${p.fast}/${p.slow} + 60m×${p.breakout} · 量≥1.2×`;
+  const gapNeed = `日线EMA${p.fast}/${p.slow}方向 + 60m突破前${p.breakout}根 + 量≥1.2×`;
+  if (!item) {
+    return tipStack([tipRow('当前结论', '待选品种', 'tip-mute'), tipRow('怎么做', '在上方搜索名称或完整证券代码。')]);
+  }
+  if (signal.action) {
+    const a = signal.action;
+    const conclusion = a.type === 'buy' ? '偏多 · 买入参考'
+      : a.type === 'sell' ? '偏空 · 卖出参考'
+      : a.type === 'risk' ? '风险 · 观察减仓'
+      : (a.label || '已触发');
+    const mod = a.type === 'buy' ? 'tip-up' : a.type === 'sell' ? 'tip-down' : a.type === 'risk' ? 'tip-warn' : '';
+    return tipStack([
+      tipRow('当前结论', conclusion, mod),
+      tipRow('为什么', a.reason || signal.reason || ''),
+      tipRow('还差什么', '条件已触发；关注成交与持仓风险。', 'tip-mute'),
+      tipRow('风险/注意', a.note || ''),
+      tipRow('规则口径', rule, 'tip-mute'),
+    ]);
+  }
+  const reason = signal.reason || '等待判断。';
+  let conclusion = '观望';
+  let mod = '';
+  let gap = `还差：${gapNeed}`;
+  if (/暂停|过期|中断|失败|未确认|未覆盖|暂不启用|数据处理/.test(reason)) {
+    conclusion = '暂停';
+    mod = 'tip-warn';
+    gap = /期货/.test(reason) ? '期货口径验证前不启用波段提醒。' : '恢复有效行情、日线覆盖与已收盘60分钟后再判断。';
+  } else if (/等待|未同时满足/.test(reason)) {
+    conclusion = '观望';
+    gap = `还差：${gapNeed}`;
+  }
+  return tipStack([
+    tipRow('当前结论', conclusion, mod),
+    tipRow('为什么', reason),
+    tipRow('还差什么', gap),
+    tipRow('规则口径', rule, 'tip-mute'),
+  ]);
+}
+function formatSignalCardBody(signal) {
+  if (!signal.action) return '';
+  const a = signal.action;
+  const conclusion = a.type === 'buy' ? '偏多' : a.type === 'sell' ? '偏空' : a.type === 'risk' ? '风险' : a.label;
+  const mod = a.type === 'buy' ? 'tip-up' : a.type === 'sell' ? 'tip-down' : a.type === 'risk' ? 'tip-warn' : '';
+  return tipStack([
+    tipRow('结论', conclusion, mod),
+    tipRow('为什么', a.reason || ''),
+    a.note ? tipRow('注意', a.note, 'tip-mute') : '',
+  ]);
+}
 const readStored = (key, fallback) => { try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; } };
 const state = { profile:'short', processingIssue:'', transportIssue:'', snapshot: null, receivedAt: 0, connected: false, market: 'all', selected: readStored('barry-selected', 'SH.510300') };
 const save = (key, value) => { try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* Private browsing may disable storage. */ } };
@@ -15,9 +70,9 @@ const time = (value, date = false, zone = 'Asia/Shanghai') => value ? new Intl.D
 const now = () => state.snapshot ? state.snapshot.serverTime + (performance.now() - state.receivedAt) : Date.now();
 const fresh = item => Boolean(state.connected && !state.processingIssue && !item.dataIssue && item.quote && Number.isFinite(item.quote.timestamp) && item.quote.timestamp <= now() + 10_000 && now() - item.quote.timestamp <= 90_000);
 const strategy = (item,mode=state.profile) => {
-  const signal=item.swings?.[mode]?.current || {action:null,reason:'等待日线和60分钟历史。'};
+  const signal=item.swings?.[mode]?.current || {action:null,reason:'等待日线与60分钟历史。'};
   if(state.processingIssue)return {action:null,reason:state.processingIssue};
-  return fresh(item)?signal:{action:null,reason:state.connected?'行情过期或数据待核对，暂停提醒。':'行情连接中断，暂停提醒。'};
+  return fresh(item)?signal:{action:null,reason:state.connected?'行情过期或数据待核对，已暂停。':'行情连接中断，已暂停。'};
 };
 const riskSettings=readStored('barry-swing-risk',{});
 const positions=readStored('barry-swing-positions',{});
@@ -116,7 +171,7 @@ function renderDetail() {
     $('#selected-action').className='trade-tag hidden'; $('#strategy-label').classList.add('hidden');
     $('#chart').innerHTML='<div class="chart-empty">添加自选后查看图表与买卖信号</div>';
     $('#chart-axis').innerHTML=''; $('#detail-stats').innerHTML=''; $('#strategy-levels').innerHTML='';
-    $('#research-records').textContent='';$('#research-status').textContent='请先选择证券。';$('#evaluation-stats').textContent='';$('#evaluation-note').textContent='';$('#position-status').textContent='请先添加并选择证券。';$('#strategy-reason').textContent='在上方搜索名称或完整证券代码。'; $('#strategy-time').textContent=''; $('#market-rule').textContent='';return;
+    $('#research-records').textContent='';$('#research-status').textContent='请先选择证券。';$('#evaluation-stats').textContent='';$('#evaluation-note').textContent='';$('#position-status').textContent='请先添加并选择证券。';$('#strategy-reason').innerHTML=formatStrategyTips(null,{action:null,reason:''}); $('#strategy-time').textContent=''; $('#market-rule').textContent='';return;
   }
   state.selected = item.id;
   const signal = strategy(item);
@@ -133,10 +188,10 @@ function renderDetail() {
   $('#detail-stats').innerHTML = [['前收盘', price(item.quote?.previousClose, item)], ['成交量 · 源单位', compact(item.quote?.volume)], ['行情时间 · 上海', item.quote?.timeLabel || time(item.quote?.timestamp)], item.quote?.receivedAt ? ['读取时间 · 上海', time(item.quote.receivedAt, true)] : [item.market === 'us' ? '行情时间 · 纽约' : '计价货币', item.market === 'us' ? time(item.quote?.timestamp, false, marketZones.us) : item.currency]].map(([label, value]) => `<div><span>${label}</span><strong>${escape(value)}</strong></div>`).join('');
   $('#strategy-label').textContent = signal.action?.label || '';
   $('#strategy-label').className = signal.action ? signal.action.type : 'hidden';
-  $('#strategy-reason').textContent = signal.action ? `${signal.action.reason} ${signal.action.note}` : signal.reason;
+  $('#strategy-reason').innerHTML = formatStrategyTips(item, signal);
   const p=item.swings?.[state.profile]?.prepared.p||PROFILES[state.profile];
-  $('#strategy-levels').innerHTML=signal.action?.type==='buy'&&signal.levels?`<div class="levels">${[['触发价参考',signal.levels.reference],['目标价参考',signal.levels.target],['初始风险观察',Math.max(signal.levels.drawdown,signal.levels.loss)]].map(([label,value])=>`<div><span>${label}</span><strong>${price(value,item)}</strong></div>`).join('')}</div><p class="level-note">目标${p.target*100}%；随持仓峰值上移的回撤线需填写持仓。风险位不保证成交。</p>`:'';
-  $('#strategy-time').textContent=signal.action?.eventKey?`持仓参考 · 源报价 ${time(signal.action.time,true)} · 非账户同步`:signal.barTime?`60分钟收盘 ${time(signal.barTime,true)} · ${p.label}最长${p.days}个交易日`:'仅使用已收盘数据';
+  $('#strategy-levels').innerHTML=signal.action?.type==='buy'&&signal.levels?`<div class="levels">${[['触发价参考',signal.levels.reference],['目标价参考',signal.levels.target],['初始风险观察',Math.max(signal.levels.drawdown,signal.levels.loss)]].map(([label,value])=>`<div><span>${label}</span><strong>${price(value,item)}</strong></div>`).join('')}</div><p class="level-note">目标${p.target*100}% · 峰值回撤线需手填持仓 · 风险位不保证成交</p>`:'';
+  $('#strategy-time').textContent=signal.action?.eventKey?`时间口径 · 持仓参考 · 源报价 ${time(signal.action.time,true)} · 非账户同步`:signal.barTime?`时间口径 · 60m收盘 ${time(signal.barTime,true)} · ${p.label}最长${p.days}个交易日`:'时间口径 · 仅已收盘数据';
   renderEvaluation(item);renderPosition(item);renderResearch(item);
   $('#market-rule').textContent = item.rule;
 }
@@ -145,7 +200,7 @@ function renderSignals() {
   const items = state.snapshot.instruments.filter(item => strategy(item).action);
   $('#signal-grid').innerHTML = items.length ? items.map(item => {
     const signal = strategy(item);
-    return `<button class="signal-card" data-select="${escape(item.id)}"><div class="signal-card-top"><span class="trade-tag ${signal.action.type}">${signal.action.label}</span><span class="small-label">${PROFILES[state.profile].label} · 60 MIN</span></div><h3>${escape(item.name)} <span>${escape(item.symbol)}</span></h3><p>${escape(signal.action.reason)}</p><span class="small-label">${time(signal.action.time)} ${signal.action.eventKey?'持仓参考':'收盘触发'} ${state.snapshot.mode === 'demo' ? '· 模拟' : ''}</span></button>`;
+    return `<button class="signal-card" data-select="${escape(item.id)}"><div class="signal-card-top"><span class="trade-tag ${signal.action.type}">${signal.action.label}</span><span class="small-label">${PROFILES[state.profile].label} · 60 MIN</span></div><h3>${escape(item.name)} <span>${escape(item.symbol)}</span></h3>${formatSignalCardBody(signal)}<span class="small-label">${time(signal.action.time)} · ${signal.action.eventKey?'持仓参考':'收盘触发'}${state.snapshot.mode === 'demo' ? ' · 模拟' : ''}</span></button>`;
   }).join('') : '<div class="empty">当前没有同时满足规则的买卖信号。</div>';
 }
 
@@ -155,14 +210,23 @@ function render() {
   const disconnected = !state.connected;
   const providerDown=!demo&&state.snapshot.status?.connected===false;
   $('#data-banner').classList.toggle('live-banner', !demo && !disconnected && !providerDown && !state.processingIssue);
-  $('#data-banner').innerHTML = `<span class="banner-icon">${disconnected||providerDown||state.processingIssue ? '!' : demo ? 'D' : '↗'}</span><div><strong>${disconnected ? '本机看板暂未响应 · 正在自动重试' : state.processingIssue ? '行情数据处理失败 · 策略已暂停' : providerDown ? 'Wind连接中断 · 正在自动重连' : demo ? '模拟体验模式 · 不是实际行情' : '外部行情模式 · 请核对数据服务的市场权限和延迟'}</strong><span>${disconnected ? escape(state.transportIssue)||'保留最近画面；连接恢复后自动继续更新，无需刷新网页。' : state.processingIssue ? escape(state.processingIssue) : demo ? '所有价格均由程序生成，仅用于体验界面与验证规则；接入你的行情服务后才能跟踪真实市场。' : '显示源数据时间；超过 90 秒未更新的品种停止策略判断。行情接入不等于交易授权。'}</span></div>`;
+  const bannerTitle = disconnected ? '暂停 · 本机看板暂未响应'
+    : state.processingIssue ? '暂停 · 行情处理失败'
+    : providerDown ? '暂停 · Wind连接中断'
+    : demo ? '观望 · 模拟体验（非实盘）'
+    : '外部行情 · 请核对权限与延迟';
+  const bannerWhy = disconnected ? (escape(state.transportIssue)||'保留最近画面；恢复后自动继续，无需刷新。')
+    : state.processingIssue ? escape(state.processingIssue)
+    : demo ? '价格由程序生成，仅验界面与规则；接入行情后才可跟踪真实市场。'
+    : '源时间>90秒未更新则停止该品种策略判断；接入≠交易授权。';
+  $('#data-banner').innerHTML = `<span class="banner-icon">${disconnected||providerDown||state.processingIssue ? '!' : demo ? 'D' : '↗'}</span><div class="banner-tip"><strong>${bannerTitle}</strong><span>${bannerWhy}</span></div>`;
   if (!demo && !disconnected && !state.processingIssue && state.snapshot.status?.message) {
-    $('#data-banner div > span').textContent = state.snapshot.status.message+(state.snapshot.status.lastQuoteReadAt?` 最近读取报价 ${time(state.snapshot.status.lastQuoteReadAt,true)}；源时间未更新时仍暂停对应信号。`:'');
+    $('#data-banner .banner-tip > span').textContent = state.snapshot.status.message+(state.snapshot.status.lastQuoteReadAt?` 最近读取 ${time(state.snapshot.status.lastQuoteReadAt,true)}；源时间未更新仍暂停对应信号。`:'');
   }
   $('#source-label').textContent = state.snapshot.source;
   $('#directory-status').textContent=state.snapshot.directoryStatus || '输入代码或名称查找证券，点击添加开始读取行情。';
   const p={...PROFILES[state.profile],...riskSettings[state.profile]};
-  $('#profile-summary').textContent=`目标${p.target*100}% · 峰值回撤≤${Math.round(p.drawdown*100)}% · 买入亏损≤${Math.round(p.loss*100)}%`;
+  $('#profile-summary').innerHTML=`<span class="profile-chip">目标 <b>${p.target*100}%</b></span><span class="profile-chip">峰值回撤 ≤<b>${Math.round(p.drawdown*100)}%</b></span><span class="profile-chip">买入亏损 ≤<b>${Math.round(p.loss*100)}%</b></span>`;
   renderOverview(); renderTable(); renderDetail(); renderSignals();renderMacro();
 }
 
@@ -311,7 +375,11 @@ function renderEvaluation(item) {
   const format=v=>v===null?'暂无样本':(v*100).toFixed(1)+'%';
   $('#evaluation-stats').innerHTML=eligible&&stats?`<div class="detail-stats">${[['综合成功率',format(stats.successRate)],['目标达成率',format(stats.targetRate)],['风险合格率',format(stats.riskRate)],['已完成 / 观察中',`${stats.completed} / ${stats.pending}`]].map(([a,b])=>`<div><span>${a}</span><strong>${b}</strong></div>`).join('')}</div>`:'尚无可评估历史。';
   const hours=item.hourlyBars||[];
-  $('#evaluation-note').textContent=eligible?`${hours[0]?.date||''} 至 ${hours.at(-1)?.date||''} · 当前${state.snapshot.mode==='demo'?'模拟':'Wind'}数据窗口；不重叠多头交易，下一根开盘买入，A股T+1；手续费不计。同根顺序不明/缺失数据${stats?.ambiguous||0}笔，保守不计成功。${(stats?.completed||0)<30?'样本少于30笔，统计不足。':''}未独立样本验证，不代表未来准确率。`:'等待真实日线、60分钟历史和时间口径。';
+  $('#evaluation-note').innerHTML=eligible?tipStack([
+    tipRow('样本窗口', `${hours[0]?.date||''} → ${hours.at(-1)?.date||''} · ${state.snapshot.mode==='demo'?'模拟':'Wind'}`),
+    tipRow('成交口径', '不重叠多头 · 下一根开盘买 · A股T+1 · 不计手续费'),
+    tipRow('统计注意', `同根顺序不明/缺失 ${stats?.ambiguous||0} 笔不计成功${(stats?.completed||0)<30?' · 样本<30不足':''} · 未独立验证，不代表未来准确率`, 'tip-mute'),
+  ]):tipStack([tipRow('当前结论','等待评估','tip-mute'), tipRow('还差什么','真实日线、60分钟历史与时间口径')]);
   if(!['risk-drawdown','risk-loss'].includes(document.activeElement.id)){
     const p=data?.prepared.p||PROFILES[state.profile];$('#risk-drawdown').value=Math.round(p.drawdown*100);$('#risk-loss').value=Math.round(p.loss*100);
   }
