@@ -21,6 +21,12 @@ SERIES={
 }
 # Supplied by the user from Wind's generator on 2026-10-28; account access still must be tested locally.
 DEFAULT_CODES={'pmi':'M0017126','dr007':'M0041502','omo7d':'M0325686'}
+# Happy-path refresh window: enough for recent daily rates + ~1 PMI month-end; avoid burning quota.
+DEFAULT_REFRESH_LOOKBACK_DAYS=35
+# Wind support 2026-10-28: empty CLOSE / -40522015 under Python often means API traffic quota exceeded.
+AUTHORITY_ERROR_CODES=frozenset({-40522015})
+QUOTA_RECOVERY_HINT=('Wind客服确认：Python EDB 空值或“无权限”表现常因 API 流量配额超限；'
+  '配额按168小时（7天）滚动恢复。请暂缓长区间、Fill对照与完整诊断，待恢复后用短区间重试。')
 
 
 def edb_code(value):
@@ -83,6 +89,34 @@ def response_diagnostics(response):
       'firstTimes':[str(t)[:40] for t in times[:2]],'lastTimes':[str(t)[:40] for t in times[-2:]],'columns':columns}
 
 
+
+def bounded_out_message(response):
+    """Peek vendor OUTMESSAGE without exporting long arbitrary text."""
+    data=getattr(response,'Data',None) or []
+    if not data:return None
+    first=data[0][0] if isinstance(data[0],(list,tuple)) and data[0] else data[0] if not isinstance(data[0],(list,tuple)) else None
+    if first is None:return None
+    try:
+        if math.isfinite(float(first)) and not isinstance(first,bool):return None
+    except (TypeError,ValueError):pass
+    text=str(first)
+    return text[:160]
+
+
+def edb_failure_message(error_code,response=None,empty=False):
+    """User-facing Chinese error; mention rolling quota recovery for known symptoms."""
+    out=bounded_out_message(response) if response is not None else None
+    authority=error_code in AUTHORITY_ERROR_CODES or (out and 'no authority' in out.lower())
+    if error_code not in (None,0):
+        message='Wind EDB错误码：'+str(error_code)
+        if out:message+=('；'+out)
+        if authority or empty:message+='。'+QUOTA_RECOVERY_HINT
+        return message
+    if empty:
+        return 'EDB没有有效数值（返回行存在但 CLOSE 全空）。'+QUOTA_RECOVERY_HINT
+    return 'EDB没有有效数值；请检查编号、区间和接口权限'
+
+
 def fetch_macro(api,config,begin,end,options=''):
     """EDB Times are observation periods; never call them publication timestamps."""
     config=config_value(config);first,last=date.fromisoformat(begin),date.fromisoformat(end)
@@ -99,7 +133,9 @@ def fetch_macro(api,config,begin,end,options=''):
             response=api.edb(code,begin,end,options) # Fill is permitted for diagnosis only; normal collectors use ''.
             item['diagnostics']=response_diagnostics(response)
             error=getattr(response,'ErrorCode',None);item['errorCode']=error
-            if error!=0:raise ValueError('Wind EDB错误码：'+str(error))
+            out=bounded_out_message(response)
+            if out:item['outMessage']=out
+            if error!=0:raise ValueError(edb_failure_message(error,response))
             times=list(getattr(response,'Times',None) or []);values=getattr(response,'Data',None) or []
             codes=[str(v).upper() for v in (getattr(response,'Codes',None) or [])]
             item['returnedRows']=len(times)
@@ -117,7 +153,7 @@ def fetch_macro(api,config,begin,end,options=''):
                 if isinstance(raw,bool) or not 0<=value<=meta['max'] or (key=='pmi' and value==0):raise ValueError('数值超出该指标范围，请核对编号和单位')
                 item['points'].append({'observationDate':day,'value':value})
             item['invalidRows']=invalid
-            if not item['points']:raise ValueError('EDB没有有效数值；请检查编号、区间和接口权限')
+            if not item['points']:raise ValueError(edb_failure_message(error,response,empty=True))
             # Missing rows remain missing, never a forward-filled rate or PMI.
             item['points'].sort(key=lambda p:p['observationDate'])
         except Exception as error:
@@ -265,7 +301,10 @@ class MacroStore:
                         if 'error' in result:raise ValueError(result['error'])
                         self.append(result['data'])
                         errors=[s for s in result['data']['series'] if s.get('error')]
-                        self.message='宏观读取完成，已保留首次观察和数值修订。' if not errors else '部分宏观指标读取失败；请查看各项原因。'
+                        if not errors:self.message='宏观读取完成，已保留首次观察和数值修订。'
+                        elif any('168小时' in (s.get('error') or '') for s in errors):
+                            self.message='宏观读取未取得有效数值，疑似 Wind API 流量配额超限（168小时滚动恢复）；请暂缓重复拉取。'
+                        else:self.message='部分宏观指标读取失败；请查看各项原因。'
                     except (ValueError,sqlite3.Error) as error:self.message='宏观读取未完成：'+str(error)
                     self.due=time.monotonic()+self.config['refreshSeconds']
             if self.config_issue or self.loading:return
@@ -275,7 +314,7 @@ class MacroStore:
                 self.worker=HistoryWorker(timeout=60)
             today=datetime.now(CHINA).date()
             if self.worker.submit({'kind':'macro','binding':binding_hash(self.config),'config':copy.deepcopy(self.config),
-              'begin':(today-timedelta(days=120)).isoformat(),'end':today.isoformat()}):
+              'begin':(today-timedelta(days=DEFAULT_REFRESH_LOOKBACK_DAYS)).isoformat(),'end':today.isoformat()}):
                 self.loading=True;self.manual_pending=False;self.message='正在本机独立进程读取宏观，行情轮询继续。'
 
     def close(self):

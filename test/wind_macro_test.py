@@ -45,6 +45,28 @@ class WindMacroTest(unittest.TestCase):
         b=fetch_macro(api,config_value({}),'2026-08-01','2026-10-28')
         self.assertTrue(all(s.get('error') and not s['points'] for s in b['series']))
         self.assertIn('-7',b['series'][1]['error']);self.assertIn('没有有效',b['series'][0]['error'])
+        self.assertIn('168小时',b['series'][0]['error'])
+
+    def test_authority_error_mentions_rolling_quota_recovery(self):
+        class Authority(API):
+            def edb(self,code,begin,end,options):
+                return SimpleNamespace(ErrorCode=-40522015,Codes=['ErrorReport'],Fields=['OUTMESSAGE'],
+                  Times=[datetime.fromisoformat('2026-10-27')],Data=[['CWSDService:: no authority.']])
+        b=fetch_macro(Authority(),config_value({}),'2026-10-20','2026-10-28')
+        self.assertTrue(all('-40522015' in s['error'] and '168小时' in s['error'] for s in b['series']))
+        self.assertTrue(all(s.get('outMessage','').startswith('CWSDService') for s in b['series']))
+
+    def test_scheduler_uses_short_refresh_lookback_to_limit_quota(self):
+        from wind_macro import DEFAULT_REFRESH_LOOKBACK_DAYS
+        from datetime import date,timedelta
+        self.assertEqual(DEFAULT_REFRESH_LOOKBACK_DAYS,35)
+        s=MacroStore();s.configure({'enabled':True});jobs=[]
+        class Worker:
+            def poll(self):return None
+            def submit(self,job):jobs.append(job);return True
+        s.worker=Worker();s.tick()
+        today=date.today();begin=date.fromisoformat(jobs[0]['begin'])
+        self.assertEqual((today-begin).days,DEFAULT_REFRESH_LOOKBACK_DAYS)
 
     def test_append_only_ledger_deduplicates_and_preserves_revisions_and_old_values(self):
         s=MacroStore();b=batch();s.append(b);s.append(b)

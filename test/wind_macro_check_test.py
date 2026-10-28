@@ -49,7 +49,17 @@ class MacroDiagnosticsTest(unittest.TestCase):
         result=probe_macro(api,config_value({}),'2022-09-25','2026-10-28')
         self.assertTrue(all(c['errorCode']==-7 for c in result['checks'] if c['key']=='dr007'))
         self.assertIn('程序不猜测',next(c['finding'] for c in result['conclusions'] if c['key']=='dr007'))
+        self.assertIn('168小时',next(c['finding'] for c in result['conclusions'] if c['key']=='pmi'))
         self.assertTrue(all(c['diagnostics']['columns'][0]['types']=={'none':2} for c in result['checks'] if c['key']=='pmi'))
+
+    def test_authority_code_finding_mentions_quota_recovery(self):
+        class Authority(API):
+            def edb(self,code,begin,end,options):
+                return SimpleNamespace(ErrorCode=-40522015,Codes=['ErrorReport'],Fields=['OUTMESSAGE'],
+                  Times=[datetime(2026,10,27)],Data=[['CWSDService:: no authority.']])
+        result=probe_macro(Authority(),config_value({}),'2022-09-25','2026-10-28')
+        self.assertTrue(all('168小时' in c['finding'] for c in result['conclusions']))
+        self.assertIn('9次',result['note'])
 
     def test_cli_only_writes_new_diagnostic_files_and_preserves_ledger_and_config(self):
         with tempfile.TemporaryDirectory() as folder:

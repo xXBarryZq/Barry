@@ -472,6 +472,7 @@ def main(argv=None):
                 try:
                     begin=(date.fromisoformat(dataset['plan']['startDate'])-timedelta(days=400)).isoformat()
                     print('正在自动读取Wind宏观历史；不重新查询股票，EDB历史首次公布版本仍需核验。',flush=True)
+                    print('注意：长区间 EDB 会消耗 API 流量配额（168小时滚动恢复）。若刚遇配额超限，请先用看板短区间确认可读，再跑本命令。',flush=True)
                     batch=macro.collect_history(begin,dataset['plan']['endDate'])
                     save_json(output/'Wind宏观历史.json',batch)
                     observed=macro.context()

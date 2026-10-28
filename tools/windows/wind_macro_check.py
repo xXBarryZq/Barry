@@ -32,6 +32,9 @@ def probe_macro(api,config,begin,end):
             finding='仅Fill=Previous返回有效值；需核对填充来源与观察期，暂不自动采用。'
         elif any(c['validRows'] for c in rows.values()):
             finding='至少一种原始查询返回有效值；历史首发时间与指标身份仍需核验。'
+        elif any(c.get('errorCode')==-40522015 for c in rows.values()) or (
+            all(not c['validRows'] for c in rows.values()) and any(c.get('errorCode') in (None,0) for c in rows.values())):
+            finding='未见有效数值（无权限错误码或 CLOSE 全空）。Wind客服确认常因 API 流量配额超限，按168小时滚动恢复；请暂缓重复诊断与长区间拉取。'
         elif any(c.get('errorCode') not in (None,0) for c in rows.values()):
             finding='接口仍返回错误码；具体是指标、授权或服务问题，需由Wind确认，程序不猜测错误含义。'
         else:
@@ -39,7 +42,7 @@ def probe_macro(api,config,begin,end):
         conclusions.append({'key':key,'name':meta['name'],'finding':finding})
     return {'schema':'barry-wind-macro-diagnostics-v1','checkedAt':datetime.now(CHINA).isoformat(),
       'stockQueries':0,'ledgerWrites':False,'checks':checks,'conclusions':conclusions,
-      'note':'只比较近期/长区间及原始/填充查询，不修改宏观留档或模型。填充值不证明历史首次发布时间，也不代表策略验证通过。'}
+      'note':'只比较近期/长区间及原始/填充查询，不修改宏观留档或模型。完整诊断最多9次EDB请求，会消耗API流量配额（168小时滚动恢复）。填充值不证明历史首次发布时间，也不代表策略验证通过。'}
 
 
 def diagnostic_html(report):
@@ -75,6 +78,7 @@ def main(argv=None,worker=None):
     output.mkdir(parents=True,exist_ok=True)
     from history_worker import HistoryWorker
     worker=worker or HistoryWorker(timeout=90)
+    print('注意：完整诊断会对每个指标发起近期原始、Fill=Previous、长区间共最多9次 EDB 请求，消耗 Wind API 流量配额（168小时滚动恢复）。配额不足时请勿重复运行。',flush=True)
     print('正在检查3个宏观指标，每项比较近期原始、近期填充及长区间读取；不查询股票。',flush=True)
     try:
         if not worker.submit({'kind':'macro_diagnose','config':config,'begin':begin,'end':end}):raise ValueError('检查进程正忙')
