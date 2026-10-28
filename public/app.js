@@ -75,34 +75,37 @@ function renderTable() {
 }
 
 function drawChart(item) {
-  const bars = (item.hourlyBars||[]).slice(-60);
-  if(bars.filter(validBar).length<2){$('#chart').innerHTML='<div class="chart-empty">等待60分钟历史</div>';$('#chart-axis').innerHTML='';return;}
-  const values = bars.filter(validBar).map(bar => bar.close);
+  const raw = (item.hourlyBars||[]).slice(-60);
+  const bars = raw.filter(validBar);
+  if(bars.length<2){$('#chart').innerHTML='<div class="chart-empty">等待60分钟历史</div>';$('#chart-axis').innerHTML='';return;}
+  const values = bars.map(bar => bar.close);
   const min = Math.min(...values);
   const max = Math.max(...values);
   const padding = Math.max((max - min) * 0.18, item.tick * 3);
   const lower = min - padding;
   const upper = max + padding;
   const y = value => 160 - (value - lower) / (upper - lower) * 140;
-  const span = bars.at(-1).time - bars[0].time;
-  const x = bar => 8 + (bar.time - bars[0].time) / span * 440;
-  const segments = [];
-  bars.forEach((bar, index) => {
-    if (!validBar(bar)) return;
-    if (index === 0 || !validBar(bars[index-1]) || bar.time - bars[index - 1].time > 3_600_000) segments.push([]);
-    segments.at(-1).push({ x: x(bar).toFixed(2), y: y(bar.close).toFixed(2) });
-  });
+  const lastIndex = bars.length - 1;
+  const xAt = index => 8 + index / lastIndex * 440;
+  const points = bars.map((bar, index) => ({ x: xAt(index).toFixed(2), y: y(bar.close).toFixed(2) }));
   const stroke = values.at(-1) >= values[0] ? '#ef8c7f' : '#78cbb0';
-  const paths = segments.map(points => {
-    const line = `M${points.map(point => `${point.x},${point.y}`).join(' L')}`;
-    return `<path d="${line} L${points.at(-1).x},175 L${points[0].x},175 Z" fill="url(#chart-fill)"/><path d="${line}" stroke="${stroke}" fill="none" stroke-width="2" vector-effect="non-scaling-stroke"/>`;
-  }).join('');
+  const line = `M${points.map(point => `${point.x},${point.y}`).join(' L')}`;
+  const paths = `<path d="${line} L${points.at(-1).x},175 L${points[0].x},175 Z" fill="url(#chart-fill)"/><path d="${line}" stroke="${stroke}" fill="none" stroke-width="2" vector-effect="non-scaling-stroke"/>`;
+  const markerX = barTime => {
+    let best = 0, bestDelta = Math.abs(bars[0].time - barTime);
+    for (let i = 1; i < bars.length; i++) {
+      const delta = Math.abs(bars[i].time - barTime);
+      if (delta < bestDelta) { best = i; bestDelta = delta; }
+    }
+    return xAt(best);
+  };
   const markers = (item.swings?.[state.profile]?.prepared.signals||[]).filter(Boolean).filter(marker=>marker.barTime>=bars[0].time).map(marker=>{
-    const cx=x({time:marker.barTime}).toFixed(2), cy=Math.max(12,Math.min(166,y(marker.price)+(marker.type==='buy'?17:-17))).toFixed(2);
+    const cx=markerX(marker.barTime).toFixed(2), cy=Math.max(12,Math.min(166,y(marker.price)+(marker.type==='buy'?17:-17))).toFixed(2);
     return `<g class="chart-marker ${marker.type}"><title>${marker.label}规则触发于${time(marker.time)}，历史信号</title><circle cx="${cx}" cy="${cy}" r="8"/><text x="${cx}" y="${Number(cy)+3}">${marker.type==='buy'?'B':'S'}</text></g>`;
   }).join('');
   $('#chart').innerHTML = `<svg viewBox="0 0 520 180" aria-hidden="true"><defs><linearGradient id="chart-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="${stroke}" stop-opacity="0.18"/><stop offset="100%" stop-color="${stroke}" stop-opacity="0"/></linearGradient></defs>${[35, 90, 145].map(line => `<line x1="8" y1="${line}" x2="448" y2="${line}" class="chart-grid"/><text x="458" y="${line + 4}" class="chart-axis-label">${price(upper - (line - 20) / 140 * (upper - lower), item)}</text>`).join('')}${paths}<circle cx="448" cy="${y(values.at(-1)).toFixed(2)}" r="3.5" fill="${stroke}"/>${markers}</svg>`;
-  $('#chart-axis').innerHTML = `<span>${time(bars[0].time)}</span><span>${time(bars[Math.floor(bars.length / 2)].time)}</span><span>${time(bars.at(-1).time)} 上海</span>`;
+  const mid = bars[Math.floor(bars.length / 2)];
+  $('#chart-axis').innerHTML = `<span>${time(bars[0].time)}</span><span>${time(mid.time)}</span><span>${time(bars.at(-1).time)} 上海</span>`;
 }
 
 function renderDetail() {
@@ -125,7 +128,7 @@ function renderDetail() {
   $('#detail-change').className = `change ${color(change(item))}`;
   $('#selected-action').textContent=signal.action?.label || '';
   $('#selected-action').className=`trade-tag ${signal.action?.type || ''} ${signal.action?'':'hidden'}`;
-  $('#chart-caption').textContent = state.snapshot.mode === 'demo' ? '模拟走势' : `${Math.min(item.hourlyBars?.length||0,60)} 根60分钟 K 线 · 缺失处断开`;
+  $('#chart-caption').textContent = state.snapshot.mode === 'demo' ? '模拟走势' : `${Math.min(item.hourlyBars?.length||0,60)} 根60分钟收盘 · 按交易时段连续`;
   drawChart(item);
   $('#detail-stats').innerHTML = [['前收盘', price(item.quote?.previousClose, item)], ['成交量 · 源单位', compact(item.quote?.volume)], ['行情时间 · 上海', item.quote?.timeLabel || time(item.quote?.timestamp)], item.quote?.receivedAt ? ['读取时间 · 上海', time(item.quote.receivedAt, true)] : [item.market === 'us' ? '行情时间 · 纽约' : '计价货币', item.market === 'us' ? time(item.quote?.timestamp, false, marketZones.us) : item.currency]].map(([label, value]) => `<div><span>${label}</span><strong>${escape(value)}</strong></div>`).join('');
   $('#strategy-label').textContent = signal.action?.label || '';
