@@ -88,6 +88,22 @@ class WorkerTest(unittest.TestCase):
         self.worker.timeout=6;self.worker.submit({'kind':'directory'})
         result=wait_until(self.worker.poll);self.assertEqual(result['data']['directory'][0]['sec_name'],'天齐锂业')
 
+    def test_macro_native_queries_run_in_child_main_thread_without_blocking_quotes(self):
+        sdk=self.root/'fake_history_sdk.py'
+        extra='''    def edb(self,code,begin,end,options):
+        self.check();entered.write_text(str(os.getpid()))
+        while not release.exists():time.sleep(.01)
+        return SimpleNamespace(ErrorCode=0,Codes=[code],Times=[datetime(2026,10,26)],Data=[[50 if code=='M0017126' else 1.5]])
+'''
+        sdk.write_text(sdk.read_text().replace('    def result(self,times):',extra+'    def result(self,times):'))
+        from wind_macro import config_value
+        self.worker.submit({'kind':'macro','config':config_value({}),'begin':'2026-10-01','end':'2026-10-28'})
+        wait_until(self.entered.exists);self.assertNotEqual(int(self.entered.read_text()),os.getpid())
+        board=WindDashboard(symbols=('SH.510300',));board.set_status(True,'quotes continue')
+        self.assertTrue(board.snapshot()['status']['connected']);self.assertIsNone(self.worker.poll())
+        self.release.touch();result=wait_until(self.worker.poll)
+        self.assertEqual(len(result['data']['series']),3);self.assertTrue(all(s['points'] for s in result['data']['series']))
+
     def test_stale_history_response_after_timezone_reset_is_discarded(self):
         board=WindDashboard(symbols=('US.AAPL',));old=board.states['US.AAPL']['historyToken'];board.set_zones({'usBarZone':'UTC'})
         class Worker:

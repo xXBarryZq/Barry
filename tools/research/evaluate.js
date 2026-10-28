@@ -162,7 +162,8 @@ export function runStudy(dataset){
     loaded:dataset.stocks.filter(s=>!s.error).length,
     failures:dataset.stocks.filter(s=>s.error).map(s=>({code:s.code,name:s.name,error:s.error,diagnostics:s.diagnostics||null})),
     quality:qualities,
-    contextInfo:{policy:CONTEXT_POLICY,macroRows:dataset.context?.macro?.length||0,eventRows:dataset.context?.events?.length||0,
+    windMacroInfo:dataset.windMacroInfo||null,
+    contextInfo:{policy:context.policy,macroRows:dataset.context?.macro?.length||0,eventRows:dataset.context?.events?.length||0,
       coverageRows:dataset.context?.coverage?.length||0,issues:dataset.context?.issues||[],files:dataset.context?.files||[],
       scope:dataset.context?.scope||'尚未导入宏观与事件历史资料',sourceRun:dataset.contextRun?.sourceRun||null,
       sourceDataSha256:dataset.contextRun?.sourceDataSha256||null,importerSha256:dataset.context?.importerSha256||null,
@@ -206,7 +207,12 @@ export function renderStudy(dataset,root=document.getElementById('study')){
   const segmentLabels={all:'全期',earlier:'前段',later:'后段', 'cross-boundary':'跨分段交易'};
   el('h2','宏观与重大事件实验 · 数据状态');
   el('p',`宏观记录 ${study.contextInfo.macroRows} 条；事件 ${study.contextInfo.eventRows} 条；覆盖声明 ${study.contextInfo.coverageRows} 条。未接通自动宏观/新闻流。`);
-  el('p',CONTEXT_POLICY.description+'宏观模块同时要求两期资金面和连续两个月PMI首次公布值；资料过期或缺失时暂停新增买入实验，标记待数据。');
+  el('p',study.contextInfo.policy.description+'宏观模块同时要求两期资金面和连续两个月PMI；资料过期或缺失时暂停新增买入实验，标记待数据。');
+  if(dataset.context?.macroSourcePolicy==='locally_observed')el('p','本轮宏观按本机实际观察时间生效，后续修订从被观察到时生效。EDB历史数值不代表历史首发版本；采集前的交易不会因此得到已知宏观条件，历史增强结果可能仍为未评估。');
+  if(study.windMacroInfo){
+    el('p',study.windMacroInfo.note);
+    table(['Wind宏观指标','编号','有效数值','读取问题'],study.windMacroInfo.series.map(s=>[s.name||s.key,s.code,s.rows,s.error||'数值已读取；历史首发时间未验证']));
+  }
   el('p','事件按首次可获得时间与影响分类实际完成时间两者中较晚者生效。今天补写的历史新闻判断不能改变过去的交易。事件资料为空不代表没有风险，须同时有市场和该证券的覆盖声明。覆盖完整性仍需供应商核验。');
   if(study.contextInfo.sourceRun)el('p','本轮复用已查看过的原股票历史；新增规则属于探索研究，需要新的独立检验。');
   if(study.contextInfo.issues.length)table(['文件','行','问题'],study.contextInfo.issues.map(i=>[i.file,i.line,i.message]));

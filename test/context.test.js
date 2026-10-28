@@ -58,6 +58,11 @@ test('future macro and news cannot change earlier decisions',()=>{
   d.macro.push({indicator:'cn_pmi',observationDate:'2026-10-31',availableAt:now+86400000*5,value:40});
   assert.deepEqual(createContextPolicy(d).at('002466.SZ',now,'context'),before);
 });
+test('observed revisions take effect only when seen and never count as two periods',()=>{
+  const d=data();d.macroSourcePolicy='locally_observed';d.macro.push({...d.macro[1],value:49,availableAt:now+1000});
+  const p=createContextPolicy(d);assert.equal(p.macroAt(now).allow,true);assert.equal(p.macroAt(now+1000).allow,false);
+  assert.match(p.policy.id,/observed/);assert.deepEqual(p.macroAt(now+1000).pmi,[49,50.2]);
+});
 test('next-open recheck can cancel entries but never disables existing risk exits',()=>{
   const b=(date,price,time)=>({date,time,open:price,high:price+.1,low:price-.1,close:price,volume:100});
   const bars=[b('2026-10-27',100,t('2026-10-27T15:00:00')),b('2026-10-28',100,t('2026-10-28T10:30:00')),

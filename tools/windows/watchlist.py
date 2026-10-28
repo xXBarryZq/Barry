@@ -3,6 +3,7 @@
 import copy
 import importlib
 import queue
+import sqlite3
 import threading
 import time
 import uuid
@@ -11,6 +12,7 @@ from datetime import datetime, timedelta
 from swing_data import fetch_history
 from history_worker import HistoryWorker
 from research import ResearchStore
+from wind_macro import MacroStore
 from security_catalog import SecurityCatalog, SettingsStore, candidates, instrument, normalize_query
 from wind_data import CHINA, bars_from_result, cells, get_zone, merge_bars, quote_from_result, finite
 
@@ -22,6 +24,10 @@ class WindDashboard:
         self.catalog = SecurityCatalog()
         self.store = SettingsStore(state_path)
         self.research = ResearchStore(self.store.path.with_name("research.json") if self.store.path is not None else None)
+        try:self.macro=MacroStore(self.store.path.parent if self.store.path is not None else None)
+        except (OSError,ValueError,sqlite3.Error):
+            self.macro=MacroStore()
+            self.macro.config_issue='宏观留档暂不可用，原文件保留；行情继续。请检查本机资料目录。'
         self.stop, self.lock = threading.Event(), threading.RLock()
         self.instance_id=uuid.uuid4().hex
         self.last_quote_read=None;self.last_quote_attempt=None;self.quote_polls=0
@@ -70,7 +76,7 @@ class WindDashboard:
                 'source':'Wind 本机行情 · 5 秒轮询', 'serverTime':int(time.time()*1000),
                 'status':{'connected':connected,'message':message,'lastQuoteReadAt':self.last_quote_read,'lastQuoteAttemptAt':self.last_quote_attempt,'quotePolls':self.quote_polls,'historyLoading':any(state['historyLoading'] for state in states.values())}, 'instruments':items,
                 'editableWatchlist':True, 'directoryStatus':self.catalog.a_share_status,
-                'settings':zones}
+                'settings':zones,'macro':self.macro.snapshot()}
 
     def persist(self, symbols=None, extra=None):
         ids = self.symbols if symbols is None else symbols
@@ -430,6 +436,7 @@ class WindDashboard:
                         self.refresh_quotes(api);next_quote=time.monotonic()+self.poll_seconds
                     self.resolve_commands(api)
                     self.service_history(worker)
+                    self.macro.tick()
                 except Exception as error:
                     self.set_status(False,'Wind接口异常（'+type(error).__name__+'），5秒后自动重试。')
                     self.stop.wait(5)
@@ -437,6 +444,7 @@ class WindDashboard:
         except ImportError:
             self.set_status(False,'当前Python找不到WindPy，请使用已验证连接成功的Python。')
         finally:
+            self.macro.close()
             if worker is not None:worker.close()
             if api is not None:
                 try:api.stop()

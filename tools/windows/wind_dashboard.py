@@ -20,6 +20,7 @@ FILES = {'/': ROOT / 'public/index.html', '/app.js': ROOT / 'public/app.js',
          '/style.css': ROOT / 'public/style.css', '/favicon.svg': ROOT / 'public/favicon.svg',
          '/strategy.js': ROOT / 'src/strategy.js', '/swing.js': ROOT / 'src/swing.js',
          '/market-connection.js': ROOT / 'public/market-connection.js', '/alerts.js': ROOT / 'public/alerts.js', '/positions.js': ROOT / 'src/positions.js'}
+FILES['/context.js']=ROOT/'tools/research/context.js'
 
 
 def make_server(dashboard, port):
@@ -146,6 +147,11 @@ def make_server(dashboard, port):
                     self.json(200, {'removed':value})
                 elif path == '/api/settings':
                     self.json(200, {'settings':dashboard.set_zones(data)})
+                elif path == '/api/macro/config':
+                    self.json(200,{'config':dashboard.macro.configure(data)})
+                elif path == '/api/macro/refresh':
+                    dashboard.macro.refresh()
+                    self.json(202,{'pending':True})
                 elif path == '/api/research/import':
                     text = data.get('csv')
                     if not isinstance(text,str):

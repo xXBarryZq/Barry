@@ -450,6 +450,7 @@ def main(argv=None):
     mode.add_argument('--repair-latest',action='store_true',help='复用最近一次原始回测数据，只补市场参考')
     mode.add_argument('--repair-data',type=Path,help='指定原回测数据，只补市场参考')
     mode.add_argument('--context-latest',action='store_true',help='复用最近一次股票数据，导入本机宏观/事件历史，不连接Wind')
+    mode.add_argument('--wind-macro-latest',action='store_true',help='复用最近股票历史，通过Wind EDB自动采集宏观并保存可获得时间记录')
     parser.add_argument('--context-dir',type=Path,help='宏观及事件CSV目录；未指定时使用本机research_context目录')
     parser.add_argument('--daily-source',choices=('auto','wsd','hourly'),default='auto',help='日线来源；auto在WSD全空时使用同次复权小时合成')
     parser.add_argument('--no-browser',action='store_true')
@@ -458,12 +459,34 @@ def main(argv=None):
     base=Path(os.environ.get('LOCALAPPDATA',str(Path.home()))) / 'BarryMarketWatch' / 'backtests'
     output=args.output or base/datetime.now(CHINA).strftime('run-%Y%m%d-%H%M%S-%f')
     output.mkdir(parents=True,exist_ok=True)
-    if args.from_json or args.context_latest:
+    if args.from_json or args.context_latest or args.wind_macro_latest:
         source=args.from_json or latest_study(base)
         dataset=load_study(source)
-        if args.context_latest or args.context_dir:
+        if args.context_latest or args.context_dir or args.wind_macro_latest:
             context_dir=args.context_dir or base.parent/'research_context'
             dataset['context']=read_context(context_dir)
+            if args.wind_macro_latest:
+                if sys.platform!='win32':raise ValueError('自动Wind宏观采集请在已登录Wind的Windows电脑运行')
+                from wind_macro import MacroStore
+                macro=MacroStore(base.parent)
+                try:
+                    begin=(date.fromisoformat(dataset['plan']['startDate'])-timedelta(days=400)).isoformat()
+                    print('正在自动读取Wind宏观历史；不重新查询股票，EDB历史首次公布版本仍需核验。',flush=True)
+                    batch=macro.collect_history(begin,dataset['plan']['endDate'])
+                    save_json(output/'Wind宏观历史.json',batch)
+                    observed=macro.context()
+                    dataset['context'].update(macro=observed['macro'],macroSourcePolicy=observed['macroSourcePolicy'],scope=observed['scope'])
+                    dataset['context']['issues']=[i for i in dataset['context']['issues'] if i['module']!='macro']
+                    dataset['context']['files']=[f for f in dataset['context']['files'] if f['name']!='macro.csv']
+                    dataset['windMacroInfo']={'readAt':batch['readAt'],'collectorSha256':batch['collectorSha256'],'historicalReleaseTimesVerified':False,
+                      'note':batch['note'],'series':[dict(key=s['key'],name=s['name'],unit=s['unit'],code=s['code'],
+                        rows=len(s['points']),error=s.get('error'),errorCode=s.get('errorCode'),
+                        latest=s['points'][-1] if s['points'] else None,invalidRows=s.get('invalidRows',0)) for s in batch['series']]}
+                    save_json(output/'宏观接口检查.json',dataset['windMacroInfo'])
+                    print('Wind宏观查询完成：有效数值'+str(sum(len(s['points']) for s in batch['series']))+
+                      '条，失败指标'+str(sum(bool(s.get('error')) for s in batch['series']))+'项。',flush=True)
+                    print('首次观察时间为本次实际读取时刻，不会回填成过去已知。',flush=True)
+                finally:macro.close()
             dataset['contextRun']={'sourceRun':source.parent.name,'stockPricesReused':True,
               'sourceDataSha256':hashlib.sha256(source.read_bytes()).hexdigest(),
               'note':'新增探索性宏观/事件对照；同一股票数据不是新的独立验证。'}
@@ -473,7 +496,7 @@ def main(argv=None):
                   '条，覆盖声明'+str(len(dataset['context']['coverage']))+'条。',flush=True)
             if dataset['context']['issues']:print('资料校验有问题，相关模块暂停；请查看报告中的具体原因。',flush=True)
             save_json(output/'回测数据.json',dataset)
-            if sys.platform=='win32' and not args.no_browser:os.startfile(context_dir)
+            if sys.platform=='win32' and not args.no_browser and not args.wind_macro_latest:os.startfile(context_dir)
     else:
         if args.context_dir:parser.error('--context-dir须与--from-json或--context-latest一起使用')
         if sys.platform!='win32':raise ValueError('真实Wind回测须在已安装WindPy的Windows电脑运行；云端无法访问本机终端')

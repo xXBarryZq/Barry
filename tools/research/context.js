@@ -15,14 +15,22 @@ export function createContextPolicy(data){
   const grouped=new Map();
   for(const e of data?.events||[]){const own=grouped.get(e.scope)||[];own.push(e);grouped.set(e.scope,own);}
   const coverage=data?.coverage||[];
+  const policy=data?.macroSourcePolicy==='locally_observed'?{...CONTEXT_POLICY,id:'cn-macro-events-observed-v1',
+    description:CONTEXT_POLICY.description+'本版本按本机实际观察及后续修订生效，与历史首次发布版本分开评估。'}:CONTEXT_POLICY;
   function macroAt(at){
     if(cache.has(at))return cache.get(at);
     const result=calculateMacro(at);cache.set(at,result);return result;
   }
   function calculateMacro(at){
     if(!valid||issueFor(data,'macro'))return unknown('宏观历史未提供或导入校验未通过');
-    const latest=indicator=>macro.filter(r=>r.indicator===indicator&&r.availableAt<=at&&r.observationDate<=chinaDate(at))
-      .sort((a,b)=>b.observationDate.localeCompare(a.observationDate)).slice(0,2);
+    const latest=indicator=>{
+      const byDate=new Map();
+      for(const r of macro)if(r.indicator===indicator&&r.availableAt<=at&&r.observationDate<=chinaDate(at)){
+        const previous=byDate.get(r.observationDate);
+        if(!previous||r.availableAt>=previous.availableAt)byDate.set(r.observationDate,r);
+      }
+      return [...byDate.values()].sort((a,b)=>b.observationDate.localeCompare(a.observationDate)).slice(0,2);
+    };
     const funds=latest('cn_funding'),pmi=latest('cn_pmi');
     if(funds.length<2||pmi.length<2)return unknown('需要两期已公布的资金面和PMI原始记录');
     const age=r=>(Date.parse(chinaDate(at))-Date.parse(r.observationDate))/DAY;
@@ -55,5 +63,5 @@ export function createContextPolicy(data){
     const states=variant==='macro'?[macroAt(time)]:variant==='events'?[eventsAt(code,time)]:[macroAt(time),eventsAt(code,time)];
     return {known:states.every(s=>s.known),allow:states.every(s=>s.known&&s.allow),reason:states.map(s=>s.reason).join('；')};
   }
-  return {at,macroAt,eventsAt,policy:CONTEXT_POLICY};
+  return {at,macroAt,eventsAt,policy};
 }

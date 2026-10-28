@@ -23,7 +23,10 @@ def history_loop(requests, results, api_module='WindPy'):
                     started=api.start()
                     if getattr(started,'ErrorCode',None)!=0 or not api.isconnected():
                         raise ValueError('历史数据进程未连接Wind；报价轮询继续，稍后自动重试。')
-                if job['kind']=='directory':
+                if job['kind']=='macro':
+                    from wind_macro import fetch_macro
+                    data=fetch_macro(api,job['config'],job['begin'],job['end'])
+                elif job['kind']=='directory':
                     response=api.wset('sectorconstituent','sectorid=a001010100000000')
                     fields=[str(value).upper() for value in (getattr(response,'Fields',None) or [])]
                     if getattr(response,'ErrorCode',None)!=0 or not {'WIND_CODE','SEC_NAME'}.issubset(fields):

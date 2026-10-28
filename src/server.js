@@ -7,6 +7,7 @@ import { Feed, validateUpdate } from './feed.js';
 
 const publicRoot = fileURLToPath(new URL('../public/', import.meta.url));
 const files = new Map([['/', 'index.html'], ['/app.js', 'app.js'], ['/style.css', 'style.css'], ['/favicon.svg', 'favicon.svg'], ['/strategy.js', '../src/strategy.js'], ['/swing.js', '../src/swing.js'], ['/positions.js', '../src/positions.js'], ['/alerts.js', 'alerts.js'], ['/market-connection.js', 'market-connection.js']]);
+files.set('/context.js','../tools/research/context.js');
 const mime = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml' };
 
 export function createMarketServer({ mode = 'demo', token = '', feed = new Feed({ mode }) } = {}) {

@@ -13,3 +13,6 @@ Wind检查结果-*.txt
 research.json
 backtests/
 research_context/
+wind-macro.json
+wind-macro.sqlite3*
+Wind宏观历史.json

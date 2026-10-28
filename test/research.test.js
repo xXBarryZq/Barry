@@ -59,6 +59,15 @@ test('unknown context windows are excluded from BOTH sides of the comparison',()
   assert.ok(study.comparisonTrades.filter(t=>['events','context'].includes(t.variant)).every(t=>t.entryDate>=day(210)));
   assert.ok(study.trades.filter(t=>['events','context'].includes(t.variant)).every(t=>t.entryDate>=day(210)));
 });
+test('EDB values collected after the study cannot enable past macro trades',()=>{
+  const data=withContext(),before=runStudy(data);
+  data.context.macroSourcePolicy='locally_observed';
+  for(const row of data.context.macro)row.availableAt=Date.parse(data.plan.endDate+'T23:59:59+08:00')+86400000;
+  const after=runStudy(data);
+  assert.ok(after.contextInfo.macroRows>0);assert.match(after.contextInfo.policy.id,/observed/);
+  assert.ok(after.summaries.filter(s=>['macro','context'].includes(s.variant)).every(s=>s.blocked&&s.completed===0&&s.successRate===null));
+  assert.deepEqual(after.trades.filter(t=>t.variant==='baseline'),before.trades.filter(t=>t.variant==='baseline'));
+});
 
 test('research baseline uses the exact dashboard signal and execution functions',()=>{
   const data=fixture(),item=data.stocks[0],study=runStudy(data);

@@ -2,6 +2,7 @@ import { prepareSwing, currentSwing, PROFILES, validBar } from '/swing.js';
 import { updatePosition } from '/positions.js';
 import { AlertEngine, playChime } from '/alerts.js';
 import { MarketConnection } from '/market-connection.js';
+import { createContextPolicy } from '/context.js';
 
 const $ = selector => document.querySelector(selector);
 const marketNames = { cn: 'A 股市场', futures: '国内商品期货', us: '美股市场' };
@@ -159,7 +160,25 @@ function render() {
   $('#directory-status').textContent=state.snapshot.directoryStatus || '输入代码或名称查找证券，点击添加开始读取行情。';
   const p={...PROFILES[state.profile],...riskSettings[state.profile]};
   $('#profile-summary').textContent=`目标${p.target*100}% · 峰值回撤≤${Math.round(p.drawdown*100)}% · 买入亏损≤${Math.round(p.loss*100)}%`;
-  renderOverview(); renderTable(); renderDetail(); renderSignals();
+  renderOverview(); renderTable(); renderDetail(); renderSignals();renderMacro();
+}
+
+function renderMacro(){
+  const macro=state.snapshot?.macro,local=state.snapshot?.provider==='wind-local';
+  const form=$('#macro-form');for(const node of form.querySelectorAll('input,select,button'))node.disabled=!local;
+  if(!macro){$('#macro-status').textContent='自动宏观采集请在已连接Wind的Windows本机版使用。';return;}
+  const version=JSON.stringify(macro.config);
+  if(form.dataset.version!==version){
+    for(const key of ['pmi','dr007','omo7d'])$('#macro-'+key).value=macro.config.codes[key]||'';
+    $('#macro-enabled').checked=macro.config.enabled;$('#macro-interval').value=String(macro.config.refreshSeconds);
+    form.dataset.version=version;
+  }
+  $('#macro-status').textContent=(state.connected?'':'本机连接中断，以下保留最近资料。')+macro.message+
+    (macro.readAt?` 最近读取：${time(macro.readAt,true)}。`:'');
+  $('#macro-values').innerHTML=macro.series.map(s=>`<div class="macro-value"><strong>${escape(s.name)}</strong><span>${s.latest?escape(s.latest.value)+(s.unit==='percent'?'%':''):'—'}</span><small>${escape(s.code||'待配置')} · 观察期 ${escape(s.latest?.observationDate||'—')}${s.error?' · '+escape(s.error):''}</small></div>`).join('');
+  const background=createContextPolicy(macro.liveContext).macroAt(now());
+  $('#macro-background').textContent='背景规则观察：'+(background.known?background.reason:background.reason+'，等待资料。')+' 尚未参与当前买卖标记。';
+  $('#macro-history-note').textContent=macro.historyNote;
 }
 
 function setMarket(market) {
@@ -184,7 +203,7 @@ document.addEventListener('click', async event => {
   const remove=event.target.closest('[data-remove]');
   if(remove){try{await api('/api/watchlist/remove',{id:remove.dataset.remove});await refresh();toast('已移除自选。');}catch(error){toast(error.message);}return;}
   const view=event.target.closest('[data-view]');
-  if(view){for(const name of ['market','alerts'])$('#'+name+'-view').classList.toggle('hidden',name!==view.dataset.view);document.querySelectorAll('[data-view]').forEach(button=>button.classList.toggle('active',button===view));return;}
+  if(view){for(const name of ['market','macro','alerts'])$('#'+name+'-view').classList.toggle('hidden',name!==view.dataset.view);document.querySelectorAll('[data-view]').forEach(button=>button.classList.toggle('active',button===view));return;}
   const mode=event.target.closest('[data-profile]');
   if(mode){state.profile=mode.dataset.profile;document.querySelectorAll('[data-profile]').forEach(button=>button.classList.toggle('active',button===mode));render();return;}
   const selection = event.target.closest('[data-select]');
@@ -213,6 +232,18 @@ $('#close-help').addEventListener('click', () => $('#help-dialog').close());
 $('#help-done').addEventListener('click', () => $('#help-dialog').close());
 $('#save-settings').addEventListener('click',async()=>{
   try{if(state.snapshot?.provider!=='wind-local')throw Error('请在 Wind 本机版设置行情时间口径。');await api('/api/settings',{usQuoteZone:$('#us-quote-zone').value,usBarZone:$('#us-bar-zone').value});$('#settings-message').textContent='已保存，正在重新读取美股行情。';await refresh();}catch(error){$('#settings-message').textContent=error.message;}
+});
+$('#macro-form').addEventListener('submit',async event=>{
+  event.preventDefault();
+  try{
+    if(state.snapshot?.provider!=='wind-local')throw Error('请在Wind本机版设置宏观采集。');
+    await api('/api/macro/config',{enabled:$('#macro-enabled').checked,refreshSeconds:Number($('#macro-interval').value),
+      codes:Object.fromEntries(['pmi','dr007','omo7d'].map(key=>[key,$('#macro-'+key).value]))});
+    await refresh();toast('宏观设置已保存。');
+  }catch(error){toast(error.message);}
+});
+$('#macro-refresh').addEventListener('click',async()=>{
+  try{await api('/api/macro/refresh',{});toast('已请求读取；请保持Wind和本机窗口运行。');await refresh();}catch(error){toast(error.message);}
 });
 $('#import-button').addEventListener('click',()=>$('#catalog-file').click());
 $('#catalog-file').addEventListener('change',async event=>{
