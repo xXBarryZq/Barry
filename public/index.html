@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="theme-color" content="#101512">
+  <meta name="theme-color" content="#0e1410">
   <meta name="description" content="Barry 跨市场行情观察与策略参考看板">
   <title>Barry · 市场观察台</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
@@ -19,65 +19,278 @@
   </aside>
   <div class="shell">
     <header class="topbar">
-      <div class="breadcrumbs">BARRY <span>/</span> WORKSPACE <span>/</span> <strong>市场观察台</strong></div>
+      <div class="breadcrumbs">Barry <span>/</span> <strong>市场观察台</strong></div>
       <div class="connection"><span class="dot" id="connection-dot"></span><span id="connection-text" role="status">正在连接</span><span class="clock" id="clock">--:--:--</span><span class="timezone">上海</span></div>
     </header>
     <main id="workspace">
       <section class="page-heading">
-        <div><div class="eyebrow">WATCH · ANALYZE · DECIDE</div><h1>你的自选，短中线主动提醒<span>。</span></h1><p>日线看方向 · 60分钟找机会 · 满足条件才标注 · 全部自选自动监控</p></div>
-        <button class="button secondary" id="export-button">↓ 导出观察记录</button>
+        <div>
+          <h1>自选观察<span>。</span></h1>
+          <p>短中线条件提醒 · 满足才标注</p>
+        </div>
+        <button class="button secondary" id="export-button">导出记录</button>
       </section>
-      <div class="view-tabs" role="group" aria-label="页面切换"><button class="tab active" data-view="market">行情与策略</button><button class="tab" data-view="macro">宏观数据</button><button class="tab" data-view="alerts">提醒设置 <span id="alert-indicator">关闭</span></button></div>
-      <section id="macro-view" class="panel hidden macro-panel"><h2>Wind 宏观自动采集</h2><p>配置一次指标编号，之后由本机Wind自动读取。统计数据按各自发布节奏变化，定时查询不保证首发时刻实时到达。此页只作背景观察，宏观规则尚未启用到买卖提醒。</p>
-      <form id="macro-form"><label>国家统计局制造业PMI（指数）<input id="macro-pmi" type="text" placeholder="EDB编号，或该指标的 w.edb(...)" maxlength="4000"></label><label>DR007（%）<input id="macro-dr007" type="text" placeholder="EDB编号，或该指标的 w.edb(...)" maxlength="4000"></label><label>央行7天逆回购操作利率（当日适用，%）<input id="macro-omo7d" type="text" placeholder="选择每日适用利率序列，非操作金额" maxlength="4000"></label><p>在Wind的EDB中按以上名称选择指标，用代码生成器复制对应查询；这里只提取编号，其余代码不执行。程序不能仅凭数值确认指标名称和单位，须按Wind指标说明对应填写。无需账号密码。</p><label><input id="macro-enabled" type="checkbox"> 开启自动更新</label><label>查询间隔<select id="macro-interval"><option value="900">15分钟</option><option value="300">5分钟</option><option value="60">1分钟</option><option value="3600">1小时</option></select></label><button class="button" type="submit">保存宏观设置</button><button class="button secondary" id="macro-refresh" type="button">立即读取</button></form>
-      <p id="macro-status" role="status">等待本机数据状态。</p><div id="macro-values"></div><p id="macro-background"></p><p id="macro-history-note">EDB的观察期不等于发布日期。系统从实际读取时刻起保存数值和修订，供后续检验；采集前的历史首发版本仍需核验。</p></section>
-      <section id="alerts-view" class="panel hidden alerts-settings"><h2>主动提醒</h2><p>网页保持打开时监控所有自选，不必选中标的；关闭网页后停止提醒。首次打开或开启时不补发旧信号。</p>
-      <label><input type="checkbox" id="alerts-enabled"> 开启主动提醒</label><label><input type="checkbox" id="alerts-short"> 短线：20个交易日 / 目标5%</label><label><input type="checkbox" id="alerts-medium"> 中线：60个交易日 / 目标20%</label>
-      <label><input type="checkbox" id="alerts-desktop"> 桌面弹窗（需浏览器和Windows允许）</label><label><input type="checkbox" id="alerts-sound"> 提示音</label><button class="button secondary" id="alert-test">测试弹窗 / 声音</button><p id="alert-status" role="status"></p><p>切换到其他软件时也可提醒；电脑休眠、浏览器冻结页面或Windows勿扰模式可能影响提醒。请用测试按钮核对。模拟模式通知带“模拟”字样。</p>
-      <h3>本机提醒记录</h3><div id="alert-history" aria-live="polite"></div><button class="button secondary" id="clear-alerts">清空记录</button></section>
-      <div id="market-view">
-      <div class="strategy-controls"><div class="tabs" role="group" aria-label="策略周期"><button class="tab active" data-profile="short">短线 · 20个交易日</button><button class="tab" data-profile="medium">中线 · 60个交易日</button></div><span id="profile-summary">目标5% · 峰值回撤10% · 买入亏损10%</span></div>
-      <div class="data-banner" id="data-banner" role="status"><span class="banner-icon">!</span><div><strong>正在读取行情状态</strong><span>请稍候</span></div></div>
-      <section class="security-search-section" aria-label="搜索并添加自选">
-        <div class="security-search-row"><label class="search"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="输入六位股票/ETF代码即可，如 002466、510300、159915；也支持名称" aria-label="搜索证券代码或名称" autocomplete="off" aria-controls="search-results"><kbd>/</kbd></label><button class="button secondary" id="import-button">导入名称目录</button><input id="catalog-file" class="hidden" type="file" accept=".csv,text/csv"></div>
-        <div id="search-results" class="search-results hidden" aria-live="polite"></div>
-        <p class="search-scope" id="directory-status">输入六位股票或ETF代码，无需填写.SZ/.SH；弹出证券卡片后点击“添加”。</p>
-      </section>
-      <section class="overview" aria-label="市场概览" id="overview"></section>
-      <div class="workspace-grid">
-        <section class="panel watchlist-panel">
-          <div class="panel-heading"><div><span class="eyebrow">WATCHLIST</span><h2>我的自选 <span id="instrument-count" class="count">0</span></h2></div><span class="subtle">买卖条件未满足时留空</span></div>
-          <div class="tabs" role="group" aria-label="筛选市场">
-            <button class="tab active" data-market="all" aria-pressed="true">全部</button>
-            <button class="tab" data-market="cn" aria-pressed="false">A 股</button>
-            <button class="tab" data-market="futures" aria-pressed="false">商品期货</button>
-            <button class="tab" data-market="us" aria-pressed="false">美股</button>
+
+      <div class="view-tabs" role="group" aria-label="页面切换">
+        <button class="tab active" data-view="market">行情</button>
+        <button class="tab" data-view="macro">宏观</button>
+        <button class="tab" data-view="alerts">提醒 <span id="alert-indicator">关闭</span></button>
+      </div>
+
+      <section id="macro-view" class="panel hidden macro-panel">
+        <h2>宏观数据</h2>
+        <p class="lead">本机 Wind EDB 定时读取，仅作背景观察，不参与买卖提醒。</p>
+        <form id="macro-form">
+          <label>制造业 PMI<input id="macro-pmi" type="text" placeholder="EDB 编号或 w.edb(...)" maxlength="4000"></label>
+          <label>DR007（%）<input id="macro-dr007" type="text" placeholder="EDB 编号或 w.edb(...)" maxlength="4000"></label>
+          <label>7 天逆回购利率（%）<input id="macro-omo7d" type="text" placeholder="每日适用利率序列，非操作金额" maxlength="4000"></label>
+          <details class="soft-details">
+            <summary>填写说明</summary>
+            <p>在 Wind EDB 按名称选指标，用代码生成器复制查询；这里只提取编号。请按 Wind 指标说明核对名称与单位。无需账号密码。</p>
+          </details>
+          <div class="form-row">
+            <label class="check"><input id="macro-enabled" type="checkbox"> 开启自动更新</label>
+            <label>间隔<select id="macro-interval"><option value="900">15 分钟</option><option value="300">5 分钟</option><option value="60">1 分钟</option><option value="3600">1 小时</option></select></label>
           </div>
-          <div class="table-scroll"><table class="quote-table"><thead><tr><th aria-label="移除自选"></th><th>品种 / 代码</th><th class="number">最新价</th><th class="number">涨跌幅</th><th>买卖标记</th></tr></thead><tbody id="quote-body"></tbody></table></div>
-          <div class="empty hidden" id="empty-list">当前列表为空。在上方搜索代码或名称，点击“添加”建立自选。</div>
-          <div class="table-footer"><span id="source-label">等待数据</span><span>日线趋势 + 60分钟触发</span></div>
+          <div class="form-actions">
+            <button class="button" type="submit">保存设置</button>
+            <button class="button secondary" id="macro-refresh" type="button">立即读取</button>
+          </div>
+        </form>
+        <p id="macro-status" role="status">等待本机数据状态。</p>
+        <div id="macro-values"></div>
+        <p id="macro-background"></p>
+        <p id="macro-history-note" class="note">观察期≠发布日。从读取时刻起保存数值与修订；采集前的历史首发版本仍需核验。</p>
+      </section>
+
+      <section id="alerts-view" class="panel hidden alerts-settings">
+        <h2>主动提醒</h2>
+        <p class="lead">网页保持打开时监控全部自选；关闭后停止。开启时不补发旧信号。</p>
+        <div class="check-grid">
+          <label class="check"><input type="checkbox" id="alerts-enabled"> 开启主动提醒</label>
+          <label class="check"><input type="checkbox" id="alerts-short"> 短线：20 日 / 目标 5%</label>
+          <label class="check"><input type="checkbox" id="alerts-medium"> 中线：60 日 / 目标 20%</label>
+          <label class="check"><input type="checkbox" id="alerts-desktop"> 桌面弹窗</label>
+          <label class="check"><input type="checkbox" id="alerts-sound"> 提示音</label>
+        </div>
+        <div class="form-actions">
+          <button class="button secondary" id="alert-test">测试弹窗 / 声音</button>
+        </div>
+        <p id="alert-status" role="status"></p>
+        <details class="soft-details">
+          <summary>提醒说明</summary>
+          <p>切到其他软件时也可提醒；休眠、页面冻结或勿扰模式可能影响。请用测试按钮核对。模拟模式通知带「模拟」字样。</p>
+        </details>
+        <h3>本机记录</h3>
+        <div id="alert-history" aria-live="polite"></div>
+        <button class="button secondary" id="clear-alerts">清空记录</button>
+      </section>
+
+      <div id="market-view">
+        <div class="strategy-controls">
+          <div class="tabs profile-tabs" role="group" aria-label="策略周期">
+            <button class="tab active" data-profile="short">短线 · 20 日</button>
+            <button class="tab" data-profile="medium">中线 · 60 日</button>
+          </div>
+          <span id="profile-summary">目标 5% · 回撤 10% · 亏损 10%</span>
+        </div>
+
+        <div class="data-banner" id="data-banner" role="status">
+          <span class="banner-icon">!</span>
+          <div><strong>正在读取行情状态</strong><span>请稍候</span></div>
+        </div>
+
+        <section class="security-search-section" aria-label="搜索并添加自选">
+          <div class="security-search-row">
+            <label class="search">
+              <span aria-hidden="true">⌕</span>
+              <input id="search" type="search" placeholder="六位代码或名称，如 002466、510300" aria-label="搜索证券代码或名称" autocomplete="off" aria-controls="search-results">
+              <kbd>/</kbd>
+            </label>
+            <button class="button secondary" id="import-button">导入目录</button>
+            <input id="catalog-file" class="hidden" type="file" accept=".csv,text/csv">
+          </div>
+          <div id="search-results" class="search-results hidden" aria-live="polite"></div>
+          <p class="search-scope" id="directory-status">六位代码无需 .SZ/.SH；点「添加」入自选。</p>
         </section>
-        <section class="panel detail-panel" aria-label="品种详情">
-          <div class="detail-heading"><div><div class="eyebrow" id="detail-symbol">—</div><h2 id="detail-name">选择一个品种</h2></div><span class="badge" id="detail-kind">—</span></div>
-          <div class="detail-price"><span id="detail-price">—</span><span id="detail-change" class="change">—</span><span id="selected-action" class="trade-tag hidden" role="status"></span></div>
-          <div class="chart-heading"><span>60分钟收盘走势</span><span id="chart-caption">等待数据</span></div>
-          <div id="chart" class="chart" role="img" aria-label="价格走势"></div>
-          <div class="chart-axis" id="chart-axis"><span>—</span><span>—</span><span>—</span></div>
-          <div class="chart-legend">B / S 为历史买卖规则触发点；当前标记以最新完整数据为准。</div>
-          <div class="detail-stats" id="detail-stats"></div>
-          <div class="strategy-box"><div class="strategy-title"><span class="eyebrow">买卖规则说明</span><span class="small-label">日线方向 + 60分钟突破</span></div><h3 id="strategy-label" class="hidden"></h3><p id="strategy-reason">正在加载数据。</p><div id="strategy-levels"></div><div class="strategy-time" id="strategy-time">—</div></div>
-          <div class="evaluation-box"><h3>历史信号评估 <span id="evaluation-mode"></span></h3><div id="evaluation-stats"></div><p id="evaluation-note"></p><details><summary>风险上限设置（当前周期）</summary><label>峰值回撤上限 % <input id="risk-drawdown" type="number" min="1" max="50" step="1"></label><label>相对买入价亏损上限 % <input id="risk-loss" type="number" min="1" max="50" step="1"></label><button class="button secondary" id="risk-save">保存风险上限</button></details></div>
-          <div class="research-box"><h3>补充资料 · Capital IQ / Bloomberg</h3><p>从两边的Excel导出CSV后导入。估值等资料保留独立来源和日期，仅作研究参考，不改变买卖规则；手动导入不会自动刷新。</p><label>导入来源 <select id="research-source"><option value="Capital IQ">Capital IQ</option><option value="Bloomberg">Bloomberg</option></select></label><button id="research-import" class="button secondary">导入资料CSV</button><input id="research-file" class="hidden" type="file" accept=".csv,text/csv"><details><summary>可选：同机Bloomberg接口</summary><p>如果BBG在另一台电脑，请使用CSV导入。仅当终端和看板在同机，且官方SDK/API权限均已配置时，才可按需查询。</p><button id="research-bloomberg" class="button secondary">查询本机Bloomberg</button></details><p id="research-status" role="status"></p><div id="research-records"></div></div>
-          <form id="position-form" class="position-box"><h3>我的持仓参考 <span id="position-profile"></span></h3><p>手动填写当前周期的买入信息；不连接账户。最高价请填入买入后已出现的最高价，之后在页面打开时自动跟踪。</p><label>买入价 <input id="position-entry" type="number" min="0.000001" step="any" required></label><label>买入日期 <input id="position-date" type="date" required></label><label>持仓最高价 <input id="position-peak" type="number" min="0.000001" step="any" required></label><button class="button secondary" type="submit">保存持仓参考</button><button class="button secondary" type="button" id="position-clear">清除</button><p id="position-status" role="status">未填写买入价，无法判断你的实际盈亏。</p></form>
-          <div class="market-rule"><span>ⓘ</span><p id="market-rule">请先选择品种。</p></div>
+
+        <section class="overview" aria-label="市场概览" id="overview"></section>
+
+        <div class="workspace-grid">
+          <section class="panel watchlist-panel">
+            <div class="panel-heading">
+              <h2>自选 <span id="instrument-count" class="count">0</span></h2>
+              <span class="subtle">条件未满足则留空</span>
+            </div>
+            <div class="tabs" role="group" aria-label="筛选市场">
+              <button class="tab active" data-market="all" aria-pressed="true">全部</button>
+              <button class="tab" data-market="cn" aria-pressed="false">A 股</button>
+              <button class="tab" data-market="futures" aria-pressed="false">期货</button>
+              <button class="tab" data-market="us" aria-pressed="false">美股</button>
+            </div>
+            <div class="table-scroll">
+              <table class="quote-table">
+                <thead>
+                  <tr>
+                    <th aria-label="移除自选"></th>
+                    <th>品种</th>
+                    <th class="number">最新</th>
+                    <th class="number">涨跌</th>
+                    <th>标记</th>
+                  </tr>
+                </thead>
+                <tbody id="quote-body"></tbody>
+              </table>
+            </div>
+            <div class="empty hidden" id="empty-list">暂无自选。上方搜索代码或名称后添加。</div>
+            <div class="table-footer">
+              <span id="source-label">等待数据</span>
+              <span>日线方向 + 60 分钟触发</span>
+            </div>
+          </section>
+
+          <section class="panel detail-panel" aria-label="品种详情">
+            <div class="detail-section detail-hero">
+              <div class="detail-heading">
+                <div>
+                  <div class="symbol-code" id="detail-symbol">—</div>
+                  <h2 id="detail-name">选择一个品种</h2>
+                </div>
+                <span class="badge" id="detail-kind">—</span>
+              </div>
+              <div class="detail-price">
+                <span id="detail-price">—</span>
+                <span id="detail-change" class="change">—</span>
+                <span id="selected-action" class="trade-tag hidden" role="status"></span>
+              </div>
+            </div>
+
+            <div class="detail-section">
+              <div class="chart-heading">
+                <span>60 分钟走势</span>
+                <span id="chart-caption">等待数据</span>
+              </div>
+              <div id="chart" class="chart" role="img" aria-label="价格走势"></div>
+              <div class="chart-axis" id="chart-axis"><span>—</span><span>—</span><span>—</span></div>
+              <div class="chart-legend">B / S 为历史触发点</div>
+              <div class="detail-stats" id="detail-stats"></div>
+            </div>
+
+            <div class="detail-section strategy-box">
+              <div class="strategy-title">
+                <span class="section-label">策略摘要</span>
+                <span class="small-label">日线方向 + 60 分钟突破</span>
+              </div>
+              <h3 id="strategy-label" class="hidden"></h3>
+              <p id="strategy-reason">正在加载数据。</p>
+              <div id="strategy-levels"></div>
+              <div class="strategy-time" id="strategy-time">—</div>
+            </div>
+
+            <div class="detail-section evaluation-box">
+              <h3>历史评估 <span id="evaluation-mode"></span></h3>
+              <div id="evaluation-stats"></div>
+              <p id="evaluation-note"></p>
+              <details class="soft-details">
+                <summary>风险上限（当前周期）</summary>
+                <label>峰值回撤上限 % <input id="risk-drawdown" type="number" min="1" max="50" step="1"></label>
+                <label>买入亏损上限 % <input id="risk-loss" type="number" min="1" max="50" step="1"></label>
+                <button class="button secondary" id="risk-save">保存</button>
+              </details>
+            </div>
+
+            <details class="detail-section research-box soft-details">
+              <summary>补充资料 · CIQ / Bloomberg</summary>
+              <p>导出 CSV 后导入。仅作研究参考，不改变买卖规则。</p>
+              <label>来源
+                <select id="research-source">
+                  <option value="Capital IQ">Capital IQ</option>
+                  <option value="Bloomberg">Bloomberg</option>
+                </select>
+              </label>
+              <button id="research-import" class="button secondary">导入 CSV</button>
+              <input id="research-file" class="hidden" type="file" accept=".csv,text/csv">
+              <details class="soft-details nested">
+                <summary>同机 Bloomberg 接口</summary>
+                <p>BBG 在另一台电脑请用 CSV。仅同机且已配置官方 SDK/API 时可用。</p>
+                <button id="research-bloomberg" class="button secondary">查询本机 Bloomberg</button>
+              </details>
+              <p id="research-status" role="status"></p>
+              <div id="research-records"></div>
+            </details>
+
+            <details class="detail-section soft-details">
+              <summary>持仓参考 <span id="position-profile"></span></summary>
+              <form id="position-form" class="position-box">
+                <p>手动填写当前周期买入信息；不连接账户。最高价填买入后已出现峰值，页面打开时自动跟踪。</p>
+                <label>买入价 <input id="position-entry" type="number" min="0.000001" step="any" required></label>
+                <label>买入日期 <input id="position-date" type="date" required></label>
+                <label>持仓最高价 <input id="position-peak" type="number" min="0.000001" step="any" required></label>
+                <div class="form-actions">
+                  <button class="button secondary" type="submit">保存</button>
+                  <button class="button secondary" type="button" id="position-clear">清除</button>
+                </div>
+                <p id="position-status" role="status">未填写买入价，无法判断实际盈亏。</p>
+              </form>
+            </details>
+
+            <div class="market-rule"><span>ⓘ</span><p id="market-rule">请先选择品种。</p></div>
+          </section>
+        </div>
+
+        <section class="panel signals-panel">
+          <div class="panel-heading">
+            <h2>当前信号</h2>
+            <span class="subtle">全部自选 · 不自动下单</span>
+          </div>
+          <div id="signal-grid" class="signal-grid"></div>
         </section>
       </div>
-      <section class="panel signals-panel"><div class="panel-heading"><div><span class="eyebrow">TRIGGERED SIGNALS</span><h2>当前触发的买卖信号</h2></div><span class="subtle">覆盖全部自选 · 短中线分别提醒 · 不自动下单</span></div><div id="signal-grid" class="signal-grid"></div></section>
-      </div>
-      <footer class="footer"><span>BARRY <span class="footer-mark">/</span> 做有依据的观察</span><span>成功率为当前历史窗口的规则评估，非未来保证；手续费按你的要求忽略。</span></footer>
+
+      <footer class="footer">
+        <span>Barry <span class="footer-mark">/</span> 有依据的观察</span>
+        <span>成功率为历史窗口评估，非未来保证。</span>
+      </footer>
     </main>
   </div>
-  <dialog id="help-dialog"><div class="dialog-heading"><h2>使用与规则设置</h2><button id="close-help" class="icon-button" aria-label="关闭说明">×</button></div><ol><li>上方输入代码或名称，在结果中点击“添加”。点击自选列表中的品种查看分析，× 可移除。</li><li>短线：日线EMA10/30方向，60分钟突破前20根；中线：日线EMA20/60方向，60分钟突破前55根。量均需≥此前均量1.2倍。未同时满足则不标注。</li><li>股票与ETF的卖出标记供已有持仓参考；A股还须遵守T+1。历史标记不是当时可保证成交的价格。</li><li>模拟价格仅供体验。过期、缺失或时区未确认时暂停买卖标记。</li></ol><details><summary>Wind 美股时间口径（请以 Wind 确认为准）</summary><p>报价与分钟数据可能使用不同口径，分别设置。未确认时保留“未确认”，不要凭数值猜测。</p><label class="zone-setting">报价时区<select id="us-quote-zone"><option value="unknown">未确认</option><option value="UTC">UTC</option><option value="Asia/Shanghai">北京时间</option><option value="America/New_York">美东时间（自动夏令时）</option></select></label><label class="zone-setting">分钟数据时区<select id="us-bar-zone"><option value="unknown">未确认</option><option value="UTC">UTC</option><option value="Asia/Shanghai">北京时间</option><option value="America/New_York">美东时间（自动夏令时）</option></select></label><button class="button secondary" id="save-settings">保存时间口径</button><p id="settings-message" role="status"></p></details><p>名称搜索以加载的 Wind 目录为范围。股票、ETF输入六位数字即可查询；美股可输入完整Wind代码；也可导入含“wind_code、sec_name”或“证券代码、证券简称”列的 CSV 目录。</p><p>历史评估按下一根60分钟线开盘价模拟买入，A股保守执行T+1。目标或风险触发、反向信号或期限到期退出；同根目标与风险均触及则记为不确定，不计成功。历史样本未经独立样本验证，不能证明未来收益。</p><button class="button" id="help-done">知道了</button></dialog>
+
+  <dialog id="help-dialog">
+    <div class="dialog-heading">
+      <h2>使用说明</h2>
+      <button id="close-help" class="icon-button" aria-label="关闭说明">×</button>
+    </div>
+    <ol>
+      <li>上方输入代码或名称，点「添加」。点自选查看分析，× 移除。</li>
+      <li>短线：日线 EMA10/30，60 分钟突破前 20 根；中线：EMA20/60，突破前 55 根。量 ≥ 均量 1.2 倍。未同时满足不标注。</li>
+      <li>股票与 ETF 卖出标记供持仓参考；A 股须遵守 T+1。历史标记不保证可成交。</li>
+      <li>模拟价格仅供体验。过期、缺失或时区未确认时暂停标记。</li>
+    </ol>
+    <details>
+      <summary>Wind 美股时间口径</summary>
+      <p>报价与分钟数据可能口径不同，请分别设置。未确认时保留「未确认」。</p>
+      <label class="zone-setting">报价时区
+        <select id="us-quote-zone">
+          <option value="unknown">未确认</option>
+          <option value="UTC">UTC</option>
+          <option value="Asia/Shanghai">北京时间</option>
+          <option value="America/New_York">美东时间（自动夏令时）</option>
+        </select>
+      </label>
+      <label class="zone-setting">分钟数据时区
+        <select id="us-bar-zone">
+          <option value="unknown">未确认</option>
+          <option value="UTC">UTC</option>
+          <option value="Asia/Shanghai">北京时间</option>
+          <option value="America/New_York">美东时间（自动夏令时）</option>
+        </select>
+      </label>
+      <button class="button secondary" id="save-settings">保存时间口径</button>
+      <p id="settings-message" role="status"></p>
+    </details>
+    <p>名称搜索以已加载 Wind 目录为范围。股票、ETF 输六位数字；美股可输完整 Wind 代码；也可导入含 wind_code/sec_name 或「证券代码/证券简称」列的 CSV。</p>
+    <p>历史评估按下一根 60 分钟开盘模拟买入，A 股保守 T+1。目标或风险触发、反向信号或期限到期退出；同根均触及记不确定。样本未经独立验证，不能证明未来收益。</p>
+    <button class="button" id="help-done">知道了</button>
+  </dialog>
   <div id="toast" class="toast hidden" role="status"></div>
 </body>
 </html>
