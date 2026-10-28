@@ -38,10 +38,10 @@ export function setups(daily, hours, p) {
 
 // Evaluate non-overlapping long trades, entering at NEXT hourly open, never signal close.
 // Conservative high-before-low ordering: unknown OHLC order cannot manufacture wins.
-export function evaluateTrades(hours, signals, p, market='cn', calendar=[]) {
+export function evaluateTrades(hours, signals, p, market='cn', calendar=[], entryGuard=null) {
   const sessions=[...new Set(calendar.length?calendar:hours.map(b=>b.date))].sort();
   const sessionIndex=new Map(sessions.map((day,i)=>[day,i]));
-  const trades=[];let trade=null,pending=false;
+  const trades=[];let trade=null,pending=false,cancelledEntries=0;
   for(let i=0;i<hours.length;i++) {
     const b=hours[i];
     if(!validBar(b)) {
@@ -49,7 +49,11 @@ export function evaluateTrades(hours, signals, p, market='cn', calendar=[]) {
       pending=false;continue;
     }
     if(pending&&!trade) {
-      trade={entry:b.open,entryDate:b.date,entryTime:b.time-HOUR,peak:b.open,maxDrawdown:0,maxLoss:0,riskBreached:false,targetReached:false,uncertain:false};
+      // Research can cancel a pending entry using information known at this open.
+      // Existing holdings always continue through the unchanged exit evaluator.
+      if(!entryGuard||entryGuard(b.time-HOUR,b))
+        trade={entry:b.open,entryDate:b.date,entryTime:b.time-HOUR,peak:b.open,maxDrawdown:0,maxLoss:0,riskBreached:false,targetReached:false,uncertain:false};
+      else cancelledEntries++;
     }
     pending=false;
     if(trade) {
@@ -89,7 +93,7 @@ export function evaluateTrades(hours, signals, p, market='cn', calendar=[]) {
     successRate:completed?successful/completed:null,
     targetRate:completed?trades.filter(t=>t.targetReached&&!t.uncertain).length/completed:null,
     riskRate:completed?trades.filter(t=>!t.riskBreached&&!t.uncertain).length/completed:null,
-    ambiguous:trades.filter(t=>t.uncertain).length,openTrade:trade};
+    ambiguous:trades.filter(t=>t.uncertain).length,openTrade:trade,cancelledEntries};
 }
 
 export function prepareSwing(item, mode, settings={}) {

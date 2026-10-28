@@ -16,6 +16,49 @@ function fixture(){
     universe:{note:'Synthetic software test only'},dataSource:'SYNTHETIC TEST, NOT MARKET PERFORMANCE',
     benchmark:{dailyBars:daily},stocks:[{code:'600001.SH',name:'软件测试，不是真实业绩',dailyBars:daily,hourlyBars:hours,calendar:daily.slice(180).map(b=>b.date),quality:{}}]};
 }
+function withContext(){
+  const d=fixture(),start=Date.parse(d.plan.startDate+'T00:00:00+08:00');
+  const macro=d.stocks[0].dailyBars.map(b=>({indicator:'cn_funding',observationDate:b.date,
+    availableAt:Date.parse(b.date+'T08:00:00+08:00'),value:1.6,referenceValue:1.5}));
+  for(let m=0;m<9;m++){
+    const date=new Date(Date.UTC(2025,m,0)).toISOString().slice(0,10);
+    macro.push({indicator:'cn_pmi',observationDate:date,availableAt:Date.parse(date+'T09:30:00+08:00'),value:51});
+  }
+  d.context={schema:'barry-context-v1',macro,events:[],issues:[],coverage:['CN','600001.SH'].map(scope=>({scope,
+    startAt:start,endAt:Date.parse(d.plan.endDate+'T23:59:59+08:00')}))};
+  return d;
+}
+
+test('known permissive context reproduces market trades and matched controls',()=>{
+  const study=runStudy(withContext());
+  const strip=({variant,...t})=>t;
+  for(const mode of ['short','medium'])for(const variant of ['macro','events','context']){
+    const model=study.trades.filter(t=>t.mode===mode&&t.variant===variant).map(strip);
+    const control=study.comparisonTrades.filter(t=>t.mode===mode&&t.variant===variant).map(strip);
+    const market=study.trades.filter(t=>t.mode===mode&&t.variant==='market').map(strip);
+    assert.deepEqual(model,control);assert.deepEqual(model,market);
+    assert.ok(!study.summaries.find(s=>s.mode===mode&&s.variant===variant&&s.segment==='all').blocked);
+  }
+});
+test('adverse context filters entries while common-coverage control stays unchanged',()=>{
+  const data=withContext(),before=runStudy(data);
+  data.context.events=[{id:'synthetic-risk',scope:'600001.SH',type:'company_risk',action:'pause_new_entries',
+    availableAt:Date.parse(data.plan.startDate+'T00:00:00+08:00'),assessedAt:Date.parse(data.plan.startDate+'T00:00:00+08:00'),
+    startAt:Date.parse(data.plan.startDate+'T00:00:00+08:00'),endAt:Date.parse(day(210)+'T00:00:00+08:00')}];
+  const after=runStudy(data);
+  assert.deepEqual(after.comparisonTrades,before.comparisonTrades);
+  assert.ok(before.trades.some(t=>t.variant==='events'&&t.entryDate<day(210)));
+  assert.ok(after.trades.filter(t=>['events','context'].includes(t.variant)).every(t=>t.entryDate>=day(210)));
+  assert.deepEqual(after.trades.filter(t=>['baseline','market','pullback'].includes(t.variant)),
+    before.trades.filter(t=>['baseline','market','pullback'].includes(t.variant)));
+});
+test('unknown context windows are excluded from BOTH sides of the comparison',()=>{
+  const data=withContext();for(const c of data.context.coverage)c.startAt=Date.parse(day(210)+'T00:00:00+08:00');
+  const study=runStudy(data);
+  assert.ok(study.contextInfo.coverage.some(c=>c.unknownDecisionBars>0&&c.knownDecisionBars>0));
+  assert.ok(study.comparisonTrades.filter(t=>['events','context'].includes(t.variant)).every(t=>t.entryDate>=day(210)));
+  assert.ok(study.trades.filter(t=>['events','context'].includes(t.variant)).every(t=>t.entryDate>=day(210)));
+});
 
 test('research baseline uses the exact dashboard signal and execution functions',()=>{
   const data=fixture(),item=data.stocks[0],study=runStudy(data);
@@ -81,7 +124,8 @@ test('market reference repair leaves completed baseline trades unchanged and dis
   assert.deepEqual(after.trades.filter(t=>t.variant==='baseline'),before.trades.filter(t=>t.variant==='baseline'));
   assert.equal(after.benchmarkInfo.code,'510300.SH');assert.equal(after.benchmarkInfo.isProxy,true);
   assert.ok(after.trades.some(t=>t.variant==='market'));
-  assert.ok(after.summaries.every(s=>!s.blocked));
+  assert.ok(after.summaries.filter(s=>['baseline','market','pullback'].includes(s.variant)).every(s=>!s.blocked));
+  assert.ok(after.summaries.filter(s=>['macro','events','context'].includes(s.variant)).every(s=>s.blocked));
 });
 test('warmup gaps are counted separately and the end marker does not invent a holding data gap',()=>{
   const data=fixture(),first=runStudy(data).trades.find(t=>t.mode==='short'&&t.variant==='baseline');

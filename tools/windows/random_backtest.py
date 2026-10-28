@@ -15,6 +15,7 @@ import webbrowser
 
 from swing_data import rows
 from wind_data import CHINA, cells, finite, source_date, timestamp
+from context_data import read_context
 
 FIELDS='open,high,low,close,volume'
 SLOTS=('10:30','11:30','14:00','15:00')
@@ -335,15 +336,17 @@ def save_json(path,value):
 
 def engine_hash(repo=None):
     repo=Path(repo) if repo else Path(__file__).resolve().parents[2]
-    return hashlib.sha256((repo/'src/swing.js').read_bytes()+b'\n'+(repo/'tools/research/evaluate.js').read_bytes()).hexdigest()
+    return hashlib.sha256(b'\n'.join((repo/p).read_bytes() for p in
+        ('src/swing.js','tools/research/context.js','tools/research/evaluate.js'))).hexdigest()
 
 
 def report_html(dataset,repo=None):
     repo=Path(repo) if repo else Path(__file__).resolve().parents[2]
     source=(repo/'src/swing.js').read_text(encoding='utf-8')
+    context=(repo/'tools/research/context.js').read_text(encoding='utf-8')
     research=(repo/'tools/research/evaluate.js').read_text(encoding='utf-8')
     research=re.sub(r'^import[^\n]*\n','',research,flags=re.M)
-    bundle=re.sub(r'^export\s+','',source+'\n'+research,flags=re.M)
+    bundle=re.sub(r'^export\s+','',source+'\n'+context+'\n'+research,flags=re.M)
     bundle=re.sub(r'</script',r'<\\/script',bundle,flags=re.I)
     dataset={**dataset,'evaluationEngineSha256':engine_hash(repo)}
     data=json.dumps(dataset,ensure_ascii=False,allow_nan=False).replace('<','\\u003c').replace('>','\\u003e').replace('&','\\u0026')
@@ -446,6 +449,8 @@ def main(argv=None):
     mode.add_argument('--diagnose',action='store_true',help='只检查近期数据并保存接口诊断，不抽样或回测20只股票')
     mode.add_argument('--repair-latest',action='store_true',help='复用最近一次原始回测数据，只补市场参考')
     mode.add_argument('--repair-data',type=Path,help='指定原回测数据，只补市场参考')
+    mode.add_argument('--context-latest',action='store_true',help='复用最近一次股票数据，导入本机宏观/事件历史，不连接Wind')
+    parser.add_argument('--context-dir',type=Path,help='宏观及事件CSV目录；未指定时使用本机research_context目录')
     parser.add_argument('--daily-source',choices=('auto','wsd','hourly'),default='auto',help='日线来源；auto在WSD全空时使用同次复权小时合成')
     parser.add_argument('--no-browser',action='store_true')
     args=parser.parse_args(argv)
@@ -453,9 +458,24 @@ def main(argv=None):
     base=Path(os.environ.get('LOCALAPPDATA',str(Path.home()))) / 'BarryMarketWatch' / 'backtests'
     output=args.output or base/datetime.now(CHINA).strftime('run-%Y%m%d-%H%M%S-%f')
     output.mkdir(parents=True,exist_ok=True)
-    if args.from_json:
-        dataset=load_study(args.from_json)
+    if args.from_json or args.context_latest:
+        source=args.from_json or latest_study(base)
+        dataset=load_study(source)
+        if args.context_latest or args.context_dir:
+            context_dir=args.context_dir or base.parent/'research_context'
+            dataset['context']=read_context(context_dir)
+            dataset['contextRun']={'sourceRun':source.parent.name,'stockPricesReused':True,
+              'sourceDataSha256':hashlib.sha256(source.read_bytes()).hexdigest(),
+              'note':'新增探索性宏观/事件对照；同一股票数据不是新的独立验证。'}
+            print('宏观/事件资料目录：'+str(context_dir.resolve()),flush=True)
+            print('原股票数据和日期保持不变；空模板不会生成已验证的增强信号。',flush=True)
+            print('导入：宏观'+str(len(dataset['context']['macro']))+'条，事件'+str(len(dataset['context']['events']))+
+                  '条，覆盖声明'+str(len(dataset['context']['coverage']))+'条。',flush=True)
+            if dataset['context']['issues']:print('资料校验有问题，相关模块暂停；请查看报告中的具体原因。',flush=True)
+            save_json(output/'回测数据.json',dataset)
+            if sys.platform=='win32' and not args.no_browser:os.startfile(context_dir)
     else:
+        if args.context_dir:parser.error('--context-dir须与--from-json或--context-latest一起使用')
         if sys.platform!='win32':raise ValueError('真实Wind回测须在已安装WindPy的Windows电脑运行；云端无法访问本机终端')
         api=importlib.import_module('WindPy').w
         try:

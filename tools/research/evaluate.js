@@ -1,11 +1,16 @@
 // Offline research only. The running dashboard continues to use src/swing.js.
 import {PROFILES,validBar,setups,evaluateTrades,HOUR} from '../../src/swing.js';
+import {createContextPolicy,CONTEXT_POLICY} from './context.js';
 
 export const VARIANTS = [
   {id:'baseline',label:'现有价量规则'},
   {id:'market',label:'价量规则＋市场趋势过滤'},
-  {id:'pullback',label:'回调入场实验（仅短线价量部分）'}
+  {id:'pullback',label:'回调入场实验（仅短线价量部分）'},
+  {id:'macro',label:'市场过滤＋宏观背景实验'},
+  {id:'events',label:'市场过滤＋事件风险实验'},
+  {id:'context',label:'市场过滤＋宏观及事件实验'}
 ];
+const isContext=id=>['macro','events','context'].includes(id);
 const researchEma=(values,n)=>values.slice(1).reduce((a,b)=>a+(b-a)*2/(n+1),values[0]);
 const mean=values=>values.reduce((a,b)=>a+b,0)/values.length;
 const median=values=>{const a=[...values].sort((x,y)=>x-y),i=Math.floor(a.length/2);return a.length%2?a[i]:(a[i-1]+a[i])/2;};
@@ -33,7 +38,12 @@ function dailyContext(daily,date){
   return closes.at(-1)>fast&&fast>slow&&touch&&atr>0;
 }
 
-export function researchSignals(item,mode,variant,benchmark){
+export function researchSignals(item,mode,variant,benchmark,context=null,coverageOnly=false){
+  if(isContext(variant))return researchSignals(item,mode,'market',benchmark).map((s,i)=>{
+    if(s?.type!=='buy')return s;
+    const state=context?.at(item.code,item.hourlyBars[i].time,variant);
+    return state?.known&&(coverageOnly||state.allow)?s:null;
+  });
   const p=PROFILES[mode],hours=item.hourlyBars,daily=item.dailyBars;
   const baseline=setups(daily,hours,p);
   if(variant==='baseline')return baseline;
@@ -72,7 +82,8 @@ export function summarize(trades){
 
 export function runStudy(dataset){
   if(dataset.schema!=='barry-random-study-v1'||!Array.isArray(dataset.stocks))throw Error('回测资料格式不符');
-  const results=[],trades=[],split=dataset.plan.splitDate;
+  const results=[],trades=[],comparisonTrades=[],contextComparisons=[],split=dataset.plan.splitDate;
+  const context=createContextPolicy(dataset.context);
   const marketBars=dataset.benchmark?.dailyBars||[];
   const marketValid=marketBars.filter(validBar).length;
   const benchmarkError=dataset.benchmark?.error||(marketValid<65?'市场参考不足65根完整日线，市场过滤与回调实验未评估。':null);
@@ -94,19 +105,36 @@ export function runStudy(dataset){
     for(const mode of ['short','medium'])for(const variant of VARIANTS){
       if(mode==='medium'&&variant.id==='pullback')continue;
       const p=PROFILES[mode];
-      const blocked=variant.id!=='baseline'&&Boolean(benchmarkError);
-      const signals=blocked?hours.map(()=>null):researchSignals(item,mode,variant.id,marketBars);
+      let contextCoverage=null;
+      if(isContext(variant.id)){
+        const states=hours.filter(validBar).map(b=>context.at(item.code,b.time,variant.id));
+        contextCoverage={totalDecisionBars:states.length,knownDecisionBars:states.filter(s=>s.known).length,
+          unknownDecisionBars:states.filter(s=>!s.known).length,pausedDecisionBars:states.filter(s=>s.known&&!s.allow).length};
+      }
+      const blocked=variant.id!=='baseline'&&Boolean(benchmarkError)||Boolean(contextCoverage&&!contextCoverage.knownDecisionBars);
+      const blockedReason=blocked?(benchmarkError||'没有可核验的宏观/事件共同覆盖时段；缺失资料不能视为通过'):null;
+      const signals=blocked?hours.map(()=>null):researchSignals(item,mode,variant.id,marketBars,context);
       const initial=signals.map((signal,i)=>hours[i].date>=dataset.plan.startDate?signal:null);
-      const result=evaluateTrades(evaluationHours,[...initial,null],p,'cn',item.calendar);
+      const guard=isContext(variant.id)?at=>context.at(item.code,at,variant.id).allow:null;
+      const result=evaluateTrades(evaluationHours,[...initial,null],p,'cn',item.calendar,guard);
       // The price-less end marker is not a real missing observation in an open holding.
-      if(result.openTrade)result.openTrade=evaluateTrades(hours,initial,p,'cn',item.calendar).openTrade;
+      if(result.openTrade)result.openTrade=evaluateTrades(hours,initial,p,'cn',item.calendar,guard).openTrade;
       const all=result.trades.map(t=>({...t,code:item.code,name:item.name,mode,variant:variant.id,priceAdjustment:item.quality?.priceAdjustment||null,
         segment:t.entryDate<split?(t.exitDate<split?'earlier':'cross-boundary'):'later'}));
       trades.push(...all);
       results.push({code:item.code,name:item.name,mode,variant:variant.id,...summarize(all),
         open:result.pending||0,unfilled:result.unfilled||0,
-        blocked,blockedReason:blocked?benchmarkError:null,
+        blocked,blockedReason,contextCoverage,entryCancellations:result.cancelledEntries,
         dataQuality:qualities.find(q=>q.code===item.code),buyHoldReturn,openTrade:result.openTrade||null});
+      if(isContext(variant.id)){
+        // A separate market-only control uses the SAME known-data decision windows.
+        const controlSignals=(blocked?hours.map(()=>null):researchSignals(item,mode,variant.id,marketBars,context,true))
+          .map((signal,i)=>hours[i].date>=dataset.plan.startDate?signal:null);
+        const control=evaluateTrades(evaluationHours,[...controlSignals,null],p,'cn',item.calendar,
+          at=>context.at(item.code,at,variant.id).known);
+        comparisonTrades.push(...control.trades.map(t=>({...t,code:item.code,name:item.name,mode,variant:variant.id,
+          priceAdjustment:item.quality?.priceAdjustment||null,segment:t.entryDate<split?(t.exitDate<split?'earlier':'cross-boundary'):'later'})));
+      }
     }
   }
   const summaries=[];
@@ -117,12 +145,15 @@ export function runStudy(dataset){
     for(const segment of ['all','earlier','later','cross-boundary']){
       const selected=segment==='all'?own:own.filter(t=>t.segment===segment);
       summaries.push({mode,variant:variant.id,segment,...summarize(selected),
-        blocked:variant.id!=='baseline'&&Boolean(benchmarkError),
+        blocked:rows.every(r=>r.blocked),
         open:segment==='all'?rows.reduce((n,r)=>n+r.open,0):null});
+      if(isContext(variant.id))contextComparisons.push({mode,variant:variant.id,segment,
+        model:summarize(selected),control:summarize(comparisonTrades.filter(t=>t.mode===mode&&t.variant===variant.id&&
+          (segment==='all'||t.segment===segment))),blocked:rows.every(r=>r.blocked)});
     }
   }
   return {schema:'barry-random-results-v1',plan:dataset.plan,universe:dataset.universe,
-    scope:'仅价量与市场趋势；未验证估值、行业、盈利改善、大宗交易等完整增强理论。',
+    scope:'价量、市场趋势及新增宏观/事件过滤实验；宏观和事件需另行导入带历史时点的资料。未验证估值、行业、盈利改善、大宗交易等完整增强理论。',
     dataSource:dataset.dataSource,rulesHash:dataset.evaluationEngineSha256||dataset.plan.engineSha256||null,
     benchmarkError,benchmarkDiagnostics:dataset.benchmark?.diagnostics||null,
     benchmarkInfo:{code:dataset.benchmark?.code||null,name:dataset.benchmark?.name||null,isProxy:Boolean(dataset.benchmark?.isProxy),
@@ -131,7 +162,13 @@ export function runStudy(dataset){
     loaded:dataset.stocks.filter(s=>!s.error).length,
     failures:dataset.stocks.filter(s=>s.error).map(s=>({code:s.code,name:s.name,error:s.error,diagnostics:s.diagnostics||null})),
     quality:qualities,
-    results,summaries,trades};
+    contextInfo:{policy:CONTEXT_POLICY,macroRows:dataset.context?.macro?.length||0,eventRows:dataset.context?.events?.length||0,
+      coverageRows:dataset.context?.coverage?.length||0,issues:dataset.context?.issues||[],files:dataset.context?.files||[],
+      scope:dataset.context?.scope||'尚未导入宏观与事件历史资料',sourceRun:dataset.contextRun?.sourceRun||null,
+      sourceDataSha256:dataset.contextRun?.sourceDataSha256||null,importerSha256:dataset.context?.importerSha256||null,
+      coverage:results.filter(r=>isContext(r.variant)).map(r=>({code:r.code,mode:r.mode,variant:r.variant,...r.contextCoverage,
+        blocked:r.blocked,blockedReason:r.blockedReason,entryCancellations:r.entryCancellations}))},
+    results,summaries,trades,contextComparisons,comparisonTrades};
 }
 
 const pct=x=>Number.isFinite(x)?(100*x).toFixed(2)+'%':'—';
@@ -147,7 +184,9 @@ export function renderStudy(dataset,root=document.getElementById('study')){
   el('p','交易明细中的买卖价是对应口径的复权参考价，不能当作历史实际成交报价。价格口径B表示后复权、F表示前复权；收益按同一股票、同一口径的价格比例计算。');
   el('p',study.scope);
   if(study.benchmarkInfo.isProxy)el('p',`市场过滤实际使用${study.benchmarkInfo.name}（${study.benchmarkInfo.code}），作为大盘代理。它与中证全指不同，新增结果属于探索性对照，不是原市场指数模型的独立验证。`);
-  if(study.repair)el('p','本报告复用原来的股票数据、抽样名单和研究日期，只补市场参考。原报告保留；补跑不代表获得新的独立样本。');
+  if(study.repair)el('p',dataset.contextRun?
+    '本报告沿用上轮修复的市场参考，并复用原股票数据、名单和日期，新增宏观/事件对照。旧报告保留；没有增加新的独立样本。':
+    '本报告复用原来的股票数据、抽样名单和研究日期，只补市场参考。原报告保留；补跑不代表获得新的独立样本。');
   const missingWarmup=study.quality.filter(q=>q.warmupExpected>0&&q.warmupValid<60).length;
   if(missingWarmup)el('p',`${missingWarmup}只股票在研究起点前不足60根有效日线。初期信号需要等待历史积累，不能把表头日期范围当作每一天都具备完整评估条件。`);
   if(dataset.plan.engineSha256&&dataset.evaluationEngineSha256&&dataset.plan.engineSha256!==dataset.evaluationEngineSha256)
@@ -165,6 +204,22 @@ export function renderStudy(dataset,root=document.getElementById('study')){
   const table=(headers,rows)=>{const t=el('table'),head=el('tr',undefined,el('thead',undefined,t)),body=el('tbody',undefined,t);for(const h of headers)el('th',h,head);for(const row of rows){const tr=el('tr',undefined,body);for(const v of row)el('td',String(v??'—'),tr);}};
   const label=id=>VARIANTS.find(v=>v.id===id)?.label||id;
   const segmentLabels={all:'全期',earlier:'前段',later:'后段', 'cross-boundary':'跨分段交易'};
+  el('h2','宏观与重大事件实验 · 数据状态');
+  el('p',`宏观记录 ${study.contextInfo.macroRows} 条；事件 ${study.contextInfo.eventRows} 条；覆盖声明 ${study.contextInfo.coverageRows} 条。未接通自动宏观/新闻流。`);
+  el('p',CONTEXT_POLICY.description+'宏观模块同时要求两期资金面和连续两个月PMI首次公布值；资料过期或缺失时暂停新增买入实验，标记待数据。');
+  el('p','事件按首次可获得时间与影响分类实际完成时间两者中较晚者生效。今天补写的历史新闻判断不能改变过去的交易。事件资料为空不代表没有风险，须同时有市场和该证券的覆盖声明。覆盖完整性仍需供应商核验。');
+  if(study.contextInfo.sourceRun)el('p','本轮复用已查看过的原股票历史；新增规则属于探索研究，需要新的独立检验。');
+  if(study.contextInfo.issues.length)table(['文件','行','问题'],study.contextInfo.issues.map(i=>[i.file,i.line,i.message]));
+  const coverageRows=study.contextInfo.coverage.filter(r=>r.mode==='short');
+  table(['证券／实验','已知／有效时段','未知时段','暂停时段','开盘复核取消','状态'],coverageRows.map(r=>[
+    `${r.code} · ${label(r.variant)}`,`${r.knownDecisionBars} / ${r.totalDecisionBars}`,r.unknownDecisionBars,r.pausedDecisionBars,
+    r.entryCancellations,r.blocked?r.blockedReason:'可评估部分已知时段，不能代表全期覆盖']));
+  el('p','时段统计按每只标的的有效60分钟线计算；同一时刻也会在不同股票中重复出现，不代表独立样本。未知资料与已知不利条件分别列示。过滤只限制新买入，已有持仓的止损、目标及到期退出持续计算。');
+  el('h2','宏观／事件对照 · 共同数据覆盖');
+  el('p','对照组只在增强组也有资料的时段运行市场过滤规则；新开仓时再次核对资料与事件，消息在隔夜公布时可取消待买入。比较平均单笔收益仍不能代替组合收益或证明因果。');
+  table(['周期／实验','区间','状态','增强完成／不确定','增强平均盈亏','对照完成／不确定','对照平均盈亏'],study.contextComparisons.map(r=>[
+    `${r.mode==='short'?'短线':'中线'} · ${label(r.variant)}`,segmentLabels[r.segment],r.blocked?'未评估':'探索性对照',
+    `${r.model.completed} / ${r.model.uncertain}`,pct(r.model.meanReturn),`${r.control.completed} / ${r.control.uncertain}`,pct(r.control.meanReturn)]));
   el('h2','不同规则的结果');
   table(['周期／规则','区间','完成／不确定','严格达标率','赚钱比例¹','平均盈亏¹','最差单笔¹','未结束'],study.summaries.map(r=>[
     `${r.mode==='short'?'短线':'中线'} · ${label(r.variant)}`,segmentLabels[r.segment],r.blocked?'未评估':`${r.completed} / ${r.uncertain}`,
@@ -187,7 +242,7 @@ export function renderStudy(dataset,root=document.getElementById('study')){
     'T+1、跳空越过风险线、缺失数据、同根目标与止损顺序不明均保守处理。全小时最高价等于最低价时不假定可以买卖。缺少逐笔订单、历史涨跌停及停牌状态，其他成交能力仍未被完整验证。',
     '同一股票的日线和小时线使用统一复权口径；这是价格收益近似，未逐项重建分红到账、税费和账户现金流。手续费按约定忽略。',
     '没有信号不是成功。数据读取失败的股票保留在抽样名单中，不换成另一只；失败部分的结果未知。',
-    '三个版本使用同一现有交易评估器，入场均为信号后的下一小时开盘，退出规则保持一致。回调实验仅替换入场、增加市场过滤，ATR采用14日真实波幅的简单平均；没有实现完整增强方案的财务筛选、结构止损、最低盈亏比和日线EMA退出。因此不能将其结果称为完整研究方案的胜率。',
+    '各版本使用同一交易评估器，入场均为信号后的下一小时开盘，退出规则保持一致。新增宏观/事件只限制新开仓，不强制平仓或自动增加仓位；尚未验证仓位模型和组合账户收益。回调实验仅替换入场、增加市场过滤，ATR采用14日真实波幅的简单平均；没有实现完整增强方案的财务筛选、结构止损、最低盈亏比和日线EMA退出。因此不能将其结果称为完整研究方案的胜率。',
     '先检查后段表现、样本数量、数据失败及不确定交易，再讨论是否继续验证。即使某项平均盈亏为正，也需扩大样本、保留独立区间并前向模拟。'
   ])el('p',text);
   el('p',`读取时间：${dataset.collectedAt}。生成报告不提交订单、不读取账户和持仓，不改变看板交易逻辑。`);
