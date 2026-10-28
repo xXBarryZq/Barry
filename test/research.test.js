@@ -63,6 +63,26 @@ test('missing market history suppresses experimental entries and is visible in r
   assert.match(study.benchmarkError,/entitlement/);
   assert.ok(study.trades.some(t=>t.variant==='baseline'));
   assert.equal(study.trades.filter(t=>t.variant!=='baseline').length,0);
+  assert.ok(study.summaries.filter(s=>s.variant!=='baseline').every(s=>s.blocked));
+});
+test('market reference repair leaves completed baseline trades unchanged and discloses proxy',()=>{
+  const data=fixture();data.benchmark={dailyBars:[],error:'index unavailable'};
+  const before=runStudy(data);
+  data.benchmark={code:'510300.SH',name:'沪深300ETF（市场代理）',isProxy:true,requestedCode:'000985.CSI',dailyBars:data.stocks[0].dailyBars};
+  data.repair={stockPricesReused:true};
+  const after=runStudy(data);
+  assert.deepEqual(after.trades.filter(t=>t.variant==='baseline'),before.trades.filter(t=>t.variant==='baseline'));
+  assert.equal(after.benchmarkInfo.code,'510300.SH');assert.equal(after.benchmarkInfo.isProxy,true);
+  assert.ok(after.trades.some(t=>t.variant==='market'));
+  assert.ok(after.summaries.every(s=>!s.blocked));
+});
+test('warmup gaps are counted separately and the end marker does not invent a holding data gap',()=>{
+  const data=fixture(),first=runStudy(data).trades.find(t=>t.mode==='short'&&t.variant==='baseline');
+  data.stocks[0].hourlyBars=data.stocks[0].hourlyBars.filter(b=>b.time<=first.entryTime+HOUR);
+  for(const b of data.stocks[0].dailyBars.slice(0,10))b.close=null;
+  const study=runStudy(data),row=study.results.find(r=>r.mode==='short'&&r.variant==='baseline');
+  assert.equal(study.quality[0].warmupExpected,180);assert.equal(study.quality[0].warmupValid,170);
+  assert.equal(row.open,1);assert.ok(!row.openTrade.dataGap);assert.equal(row.openTrade.uncertain,false);
 });
 test('profitable, target success, and uncertain outcomes have separate denominators',()=>{
   const t=(ret,success=false,uncertain=false)=>({return:ret,success,uncertain,maxDrawdown:.02,maxLoss:.01});

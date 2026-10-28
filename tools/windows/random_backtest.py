@@ -1,5 +1,6 @@
 """Read-only, fixed-cohort Wind research. No orders and no dashboard rule changes."""
 import argparse
+import copy
 from datetime import date, datetime, time, timedelta
 import hashlib
 import html
@@ -214,7 +215,7 @@ def fetch_hourly_stock(api,stock,dates,start,end,diagnostics):
 
 
 def fetch_benchmark(api,dates,end,daily_source='auto'):
-    item={'code':'000985.CSI'};diagnostics={'code':item['code'],'hourlyRequests':[]}
+    item={'code':'000985.CSI','name':'中证全指','isProxy':False};diagnostics={'code':item['code'],'hourlyRequests':[]}
     try:
         parsed=[]
         if daily_source!='hourly':
@@ -230,9 +231,61 @@ def fetch_benchmark(api,dates,end,daily_source='auto'):
             found=adjusted_hour_history(api,item,dates,end,diagnostics)
             by=daily_from_hours(found,dates,allow_zero_volume=True)
             if not by:raise ValueError('中证全指没有完整日线，无法使用市场过滤；个股基础规则仍单独评估')
+        if len(by)<65:raise ValueError('中证全指有效日线不足65根，无法检验市场过滤')
         return {**item,'dailyBars':[by.get(day) or placeholder(day) for day in dates],'diagnostics':diagnostics}
     except ValueError as error:
-        return {**item,'dailyBars':[],'error':str(error),'diagnostics':diagnostics}
+        original_error=str(error)
+        if daily_source=='wsd':return {**item,'dailyBars':[],'error':original_error,'diagnostics':diagnostics}
+        # A disclosed large-cap proxy, chosen for availability, not for returns.
+        proxy={'code':'510300.SH','name':'沪深300ETF（市场代理）','isProxy':True,'requestedCode':item['code'],
+               'role':'沪深300大盘代理，与中证全指不同；此分支作为新增探索性对照'}
+        proxy_diag={'code':proxy['code'],'hourlyRequests':[],'originalBenchmark':diagnostics,'originalError':original_error}
+        try:
+            print('中证全指不可用，尝试已明确标注的沪深300ETF市场代理。',flush=True)
+            found=adjusted_hour_history(api,proxy,dates,end,proxy_diag)
+            by=daily_from_hours(found,dates)
+            if len(by)<65:raise ValueError('沪深300ETF有效合成日线不足65根')
+            return {**proxy,'dailyBars':[by.get(day) or placeholder(day) for day in dates],'diagnostics':proxy_diag}
+        except ValueError as proxy_error:
+            return {**proxy,'dailyBars':[],'error':'中证全指：'+original_error+'；市场代理：'+str(proxy_error),'diagnostics':proxy_diag}
+
+
+def load_study(path):
+    data=json.loads(Path(path).read_text(encoding='utf-8-sig'))
+    if data.get('schema')!='barry-random-study-v1' or not isinstance(data.get('stocks'),list):
+        raise ValueError('需要原来的“回测数据.json”，不是已导出的“回测结果.json”')
+    if not data.get('plan',{}).get('startDate') or not data['plan'].get('endDate'):
+        raise ValueError('原始回测数据缺少固定研究日期')
+    return data
+
+
+def latest_study(base):
+    files=sorted(Path(base).glob('run-*/回测数据.json'),key=lambda p:p.stat().st_mtime_ns,reverse=True)
+    for path in files:
+        try:
+            data=load_study(path)
+            if any(s.get('hourlyBars') and s.get('dailyBars') and not s.get('error') for s in data['stocks']):return path
+        except (ValueError,OSError):continue
+    raise ValueError('未找到已保存的原始回测数据。请保留原报告文件夹中的“回测数据.json”，或使用--repair-data指定其路径')
+
+
+def repair_market_data(api,dataset,output,source_name='原回测'):
+    """Keep the cohort and every stock bar unchanged; fetch market reference only."""
+    data=copy.deepcopy(dataset)
+    dates=sorted({b['date'] for s in data['stocks'] if not s.get('error') for b in s.get('dailyBars',[])})
+    dates=[d for d in dates if d<=data['plan']['endDate']]
+    if len(dates)<65:raise ValueError('原数据中的交易日期不足65天，无法补市场参考')
+    print('复用原股票数据；保留日期 '+data['plan']['startDate']+' 至 '+data['plan']['endDate'],flush=True)
+    print('只补市场参考，不重新抽样，不重新查询个股价格。',flush=True)
+    data['benchmark']=fetch_benchmark(api,dates,data['plan']['endDate'])
+    data['repair']={'sourceRun':source_name,'repairedAt':datetime.now(CHINA).isoformat(),'stockPricesReused':True,
+                    'oldBenchmarkError':dataset.get('benchmark',{}).get('error'),
+                    'marketDefinitionChanged':bool(data['benchmark'].get('isProxy')),
+                    'note':'若使用沪深300ETF代理，这是因接口可用性新增的探索性对照；不得称为原中证全指模型或新的独立封存检验。'}
+    save_json(output/'回测数据.json',data)
+    save_json(output/'接口诊断.json',{'schema':'barry-wind-diagnostics-v1','scope':'只补市场参考，个股价格复用',
+        'benchmark':data['benchmark'].get('diagnostics'),'error':data['benchmark'].get('error')})
+    return data
 
 
 def finish_stock(stock,daily_by,found,dates,start,end,diagnostics):
@@ -348,7 +401,7 @@ def collect(api,count,years,seed,output,today=None,daily_source='auto'):
           'short':{'days':20,'target':.05,'drawdown':.10,'loss':.10},
           'medium':{'days':60,'target':.20,'drawdown':.20,'loss':.20},
           'sample':selected,'commission':0,'ruleVersion':'price-only-exploration-v1','engineSha256':engine_hash(),
-          'dailySourcePolicy':daily_source}
+          'dailySourcePolicy':daily_source,'benchmarkPolicy':'中证全指优先；不可用时明确使用沪深300ETF大盘代理'}
     save_json(output/'抽样计划.json',{'plan':plan,'universe':universe}) # Before any price query.
     print(f'已固定随机样本{count}只，不按收益挑选或替换。研究区间：{start} 至 {end}',flush=True)
     print('名单：'+', '.join(s['code'] for s in selected),flush=True)
@@ -388,8 +441,11 @@ def main(argv=None):
     parser.add_argument('--years',type=int,default=3)
     parser.add_argument('--seed',type=int,default=20261028)
     parser.add_argument('--output',type=Path)
-    parser.add_argument('--from-json',type=Path,help='从已有本地回测数据重新生成报告，不连接Wind')
-    parser.add_argument('--diagnose',action='store_true',help='只检查近期数据并保存接口诊断，不抽样或回测20只股票')
+    mode=parser.add_mutually_exclusive_group()
+    mode.add_argument('--from-json',type=Path,help='从已有本地回测数据重新生成报告，不连接Wind')
+    mode.add_argument('--diagnose',action='store_true',help='只检查近期数据并保存接口诊断，不抽样或回测20只股票')
+    mode.add_argument('--repair-latest',action='store_true',help='复用最近一次原始回测数据，只补市场参考')
+    mode.add_argument('--repair-data',type=Path,help='指定原回测数据，只补市场参考')
     parser.add_argument('--daily-source',choices=('auto','wsd','hourly'),default='auto',help='日线来源；auto在WSD全空时使用同次复权小时合成')
     parser.add_argument('--no-browser',action='store_true')
     args=parser.parse_args(argv)
@@ -398,8 +454,7 @@ def main(argv=None):
     output=args.output or base/datetime.now(CHINA).strftime('run-%Y%m%d-%H%M%S-%f')
     output.mkdir(parents=True,exist_ok=True)
     if args.from_json:
-        dataset=json.loads(args.from_json.read_text(encoding='utf-8-sig'))
-        if dataset.get('schema')!='barry-random-study-v1':raise ValueError('输入不是本工具的历史资料文件')
+        dataset=load_study(args.from_json)
     else:
         if sys.platform!='win32':raise ValueError('真实Wind回测须在已安装WindPy的Windows电脑运行；云端无法访问本机终端')
         api=importlib.import_module('WindPy').w
@@ -410,14 +465,19 @@ def main(argv=None):
                 path=diagnose(api,output)
                 if not args.no_browser:webbrowser.open(path.resolve().as_uri())
                 return path
-            try:
-                dataset=collect(api,args.count,args.years,args.seed,output,daily_source=args.daily_source)
-            except DataReadError as error:
-                if not error.diagnostics.get('preflightBlocked'):raise
-                path=output/'接口诊断.html'
-                print('\n'+str(error)+'\n诊断路径：'+str(path.resolve()),flush=True)
-                if not args.no_browser:webbrowser.open(path.resolve().as_uri())
-                return path
+            if args.repair_latest or args.repair_data:
+                source=args.repair_data or latest_study(base)
+                print('使用原数据：'+str(source.resolve()),flush=True)
+                dataset=repair_market_data(api,load_study(source),output,source.parent.name)
+            else:
+                try:
+                    dataset=collect(api,args.count,args.years,args.seed,output,daily_source=args.daily_source)
+                except DataReadError as error:
+                    if not error.diagnostics.get('preflightBlocked'):raise
+                    path=output/'接口诊断.html'
+                    print('\n'+str(error)+'\n诊断路径：'+str(path.resolve()),flush=True)
+                    if not args.no_browser:webbrowser.open(path.resolve().as_uri())
+                    return path
         finally:api.stop()
     path=output/'报告.html';path.write_text(report_html(dataset),encoding='utf-8')
     print('\n报告已保存：'+str(path.resolve()),flush=True)

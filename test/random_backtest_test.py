@@ -1,5 +1,7 @@
 from datetime import date,datetime,time,timedelta
 import json
+import copy
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -7,7 +9,7 @@ from types import SimpleNamespace
 import unittest
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'tools/windows'))
-from random_backtest import collect,diagnose,fetch_stock,fetch_benchmark,history_universe,report_html,DataReadError,SLOTS
+from random_backtest import collect,diagnose,fetch_stock,fetch_benchmark,history_universe,report_html,repair_market_data,latest_study,save_json,DataReadError,SLOTS
 
 
 def weekdays(begin,end):
@@ -27,6 +29,7 @@ class FakeWind:
         self.calls=[];self.missing=None;self.flat=None;self.bad_slot=False;self.fail_code=None;self.plan_path=None;self.mismatch=False;self.bad_adjustment=False
         self.empty_adjusted=False;self.empty_raw=False;self.clock_seconds=0;self.zero_volume=False
         self.clip_before=None;self.empty_adjusted_hours=False
+        self.unsupported_index=False
 
     def tdays(self,begin,end,options):
         return response(['date'],[],[[date.fromisoformat(d) for d in weekdays(begin,end)]])
@@ -51,6 +54,7 @@ class FakeWind:
 
     def wsi(self,code,fields,begin,end,options):
         self.calls.append(('wsi',code,begin,end,options))
+        if self.unsupported_index and code=='000985.CSI':return response(['OUTMESSAGE'],[datetime(2026,10,28)],[['test unsupported index']],code=-40520007)
         times=[];values=[]
         for day in weekdays(begin[:10],end[:10]):
             if self.clip_before and day<self.clip_before:continue
@@ -198,10 +202,59 @@ class RandomBacktestTests(unittest.TestCase):
 
     def test_empty_benchmark_daily_can_use_complete_index_hours_with_zero_volume(self):
         api=FakeWind();api.empty_adjusted=True;api.zero_volume=True
-        result=fetch_benchmark(api,weekdays('2026-01-01','2026-02-06'),'2026-02-06')
+        result=fetch_benchmark(api,weekdays('2025-10-01','2026-02-06'),'2026-02-06')
         self.assertNotIn('error',result)
-        self.assertTrue(all(b['close']==300 for b in result['dailyBars']))
+        self.assertEqual(result['dailyBars'][-1]['close'],300)
         self.assertTrue(all(b['volume']==0 for b in result['dailyBars']))
+
+    def test_unsupported_index_uses_disclosed_etf_proxy_not_a_renamed_index(self):
+        api=FakeWind();api.empty_adjusted=True;api.unsupported_index=True
+        result=fetch_benchmark(api,weekdays('2025-10-01','2026-02-06'),'2026-02-06')
+        self.assertNotIn('error',result)
+        self.assertEqual(result['code'],'510300.SH');self.assertTrue(result['isProxy'])
+        self.assertEqual(result['requestedCode'],'000985.CSI')
+        self.assertIn('-40520007',result['diagnostics']['originalError'])
+        self.assertIn('不同',result['role'])
+
+    def test_missing_index_and_proxy_keeps_market_filter_blocked(self):
+        api=FakeWind();api.empty_adjusted=True;api.empty_adjusted_hours=True;api.unsupported_index=True
+        result=fetch_benchmark(api,weekdays('2025-10-01','2026-02-06'),'2026-02-06')
+        self.assertIn('error',result);self.assertEqual(result['dailyBars'],[])
+        self.assertIn('-40520007',result['error'])
+
+    def test_market_repair_reuses_every_stock_bar_and_never_overwrites_source(self):
+        api=FakeWind()
+        with tempfile.TemporaryDirectory() as temp:
+            original=Path(temp)/'run-original';original.mkdir()
+            data=collect(api,3,1,42,original,today=date(2026,10,28))
+            data['benchmark']={'code':'000985.CSI','dailyBars':[],'error':'original index -40520007'}
+            save_json(original/'回测数据.json',data)
+            before=(original/'回测数据.json').read_bytes();snapshot=copy.deepcopy(data)
+            api.calls=[];api.empty_adjusted=True;api.unsupported_index=True
+            output=Path(temp)/'run-repaired';output.mkdir()
+            repaired=repair_market_data(api,data,output,original.name)
+            self.assertEqual(repaired['stocks'],snapshot['stocks'])
+            self.assertEqual(repaired['plan'],snapshot['plan'])
+            self.assertEqual(data,snapshot)
+            self.assertEqual((original/'回测数据.json').read_bytes(),before)
+            self.assertTrue((output/'回测数据.json').exists())
+            self.assertTrue(repaired['benchmark']['isProxy'])
+            self.assertTrue(repaired['repair']['stockPricesReused'])
+            self.assertTrue(all(c[0]!='wset' for c in api.calls))
+            self.assertTrue(all(c[1] in ('000985.CSI','510300.SH') for c in api.calls if c[0] in ('wsd','wsi')))
+
+    def test_latest_repair_source_skips_invalid_and_failed_only_runs(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base=Path(temp)
+            minimal={'schema':'barry-random-study-v1','plan':{'startDate':'2025-01-01','endDate':'2026-01-01'},
+                     'stocks':[{'dailyBars':[{}],'hourlyBars':[{}]}]}
+            for i,name in enumerate(['run-valid','run-failed','run-corrupt']):
+                path=base/name;path.mkdir();file=path/'回测数据.json'
+                if i==0:save_json(file,minimal)
+                elif i==1:save_json(file,{**minimal,'stocks':[{'error':'failed'}]})
+                else:file.write_text('{broken',encoding='utf8')
+                os.utime(file,ns=(1000000+i,1000000+i))
+            self.assertEqual(latest_study(base).parent.name,'run-valid')
 
     def test_preflight_failure_stops_before_querying_the_random_cohort(self):
         api=FakeWind();api.empty_adjusted=True;api.empty_adjusted_hours=True
