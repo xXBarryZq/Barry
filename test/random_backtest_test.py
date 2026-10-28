@@ -62,8 +62,9 @@ class FakeWind:
                 close=100 if slot=='15:00' else 101
                 if self.bad_adjustment:close=101
                 value=[100,100,100,100,1000] if (day,slot)==self.flat else [100,102,98,close,0 if self.zero_volume else 1000]
-                if 'PriceAdj=F' in options:
-                    value=[v*(2 if day<'2026-01-01' else 1) for v in value[:4]]+value[4:]
+                if 'PriceAdj=F' in options or 'PriceAdj=B' in options:
+                    factor=(2 if day<'2026-01-01' else 1)*(3 if 'PriceAdj=B' in options else 1)
+                    value=[v*factor for v in value[:4]]+value[4:]
                     if self.empty_adjusted_hours:value=[None]*5
                 values.append(value)
         data=[list(v) for v in zip(*values)] if values else [[] for _ in range(5)]
@@ -167,10 +168,11 @@ class RandomBacktestTests(unittest.TestCase):
         self.assertEqual(value['quality']['invalidHourly'],0)
         calls=[c for c in api.calls if c[0]=='wsi']
         self.assertEqual(len(calls),1)
-        self.assertEqual(calls[0][-1],'BarSize=60;PriceAdj=F')
+        self.assertEqual(calls[0][-1],'BarSize=60;PriceAdj=B')
+        self.assertEqual(value['quality']['priceAdjustment'],'B')
         self.assertTrue(calls[0][2].startswith(dates[0]))
         for b in value['dailyBars']:
-            self.assertEqual(b['close'],200 if b['date']<'2026-01-01' else 100)
+            self.assertEqual(b['close'],600 if b['date']<'2026-01-01' else 300)
             self.assertEqual(b['volume'],4000)
         self.assertIn('前复权日线',value['diagnostics']['fallbackReason'])
 
@@ -192,13 +194,13 @@ class RandomBacktestTests(unittest.TestCase):
         with self.assertRaisesRegex(DataReadError,'未确认复权') as caught:
             fetch_stock(api,{'code':'510300.SH'},weekdays('2026-01-01','2026-02-06'),'2026-02-02','2026-02-06')
         self.assertEqual(caught.exception.diagnostics['hourlyRequests'][0]['values']['CLOSE']['positive'],0)
-        self.assertTrue(all('PriceAdj=F' in c[-1] for c in api.calls if c[0]=='wsi'))
+        self.assertTrue(all('PriceAdj=B' in c[-1] for c in api.calls if c[0]=='wsi'))
 
     def test_empty_benchmark_daily_can_use_complete_index_hours_with_zero_volume(self):
         api=FakeWind();api.empty_adjusted=True;api.zero_volume=True
         result=fetch_benchmark(api,weekdays('2026-01-01','2026-02-06'),'2026-02-06')
         self.assertNotIn('error',result)
-        self.assertTrue(all(b['close']==100 for b in result['dailyBars']))
+        self.assertTrue(all(b['close']==300 for b in result['dailyBars']))
         self.assertTrue(all(b['volume']==0 for b in result['dailyBars']))
 
     def test_preflight_failure_stops_before_querying_the_random_cohort(self):

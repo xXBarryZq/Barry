@@ -87,7 +87,7 @@ export function runStudy(dataset){
       const signals=researchSignals(item,mode,variant.id,dataset.benchmark?.dailyBars||[]);
       const initial=signals.map((signal,i)=>hours[i].date>=dataset.plan.startDate?signal:null);
       const result=evaluateTrades(evaluationHours,[...initial,null],p,'cn',item.calendar);
-      const all=result.trades.map(t=>({...t,code:item.code,name:item.name,mode,variant:variant.id,
+      const all=result.trades.map(t=>({...t,code:item.code,name:item.name,mode,variant:variant.id,priceAdjustment:item.quality?.priceAdjustment||null,
         segment:t.entryDate<split?(t.exitDate<split?'earlier':'cross-boundary'):'later'}));
       trades.push(...all);
       results.push({code:item.code,name:item.name,mode,variant:variant.id,...summarize(all),
@@ -126,6 +126,7 @@ export function renderStudy(dataset,root=document.getElementById('study')){
   if(!study.loaded)el('p','全部样本未能完成数据读取，本报告没有策略盈亏结论。“保留失败样本”表示数据读取失败，不表示发生了亏损交易。请保存接口诊断以定位具体阶段。');
   const derived=dataset.stocks.filter(s=>s.quality?.dailySource?.includes('WSI')).length;
   if(derived)el('p',`${derived}只股票使用同次复权小时数据合成日线，每天要求四根完整有效的60分钟线。Wind WSD日线为空的具体原因尚待确认；合成日线尚未与官方日线交叉核验，结果仅作初步研究。`);
+  el('p','交易明细中的买卖价是对应口径的复权参考价，不能当作历史实际成交报价。价格口径B表示后复权、F表示前复权；收益按同一股票、同一口径的价格比例计算。');
   el('p',study.scope);
   if(dataset.plan.engineSha256&&dataset.evaluationEngineSha256&&dataset.plan.engineSha256!==dataset.evaluationEngineSha256)
     el('p','注意：本次报告/计算程序与采集时的程序指纹不同，应作为新版本结果保存，不能替代原先结果。');
@@ -136,7 +137,7 @@ export function renderStudy(dataset,root=document.getElementById('study')){
   button('保存结果JSON（含逐笔交易）','回测结果.json',JSON.stringify(study,null,2),'application/json;charset=utf-8');
   button('保存接口诊断','接口诊断.json',JSON.stringify({schema:'barry-wind-diagnostics-v1',plan:study.plan,benchmark:study.benchmarkDiagnostics,
     checks:dataset.stocks.map(s=>({code:s.code,ok:!s.error,error:s.error||null,diagnostics:s.diagnostics||null}))},null,2),'application/json;charset=utf-8');
-  const fields=['code','name','mode','variant','segment','entryDate','exitDate','entry','exitPrice','return','exit','success','maxDrawdown','maxLoss','uncertain'];
+  const fields=['code','name','mode','variant','priceAdjustment','segment','entryDate','exitDate','entry','exitPrice','return','exit','success','maxDrawdown','maxLoss','uncertain'];
   const csv=v=>{const s=String(v??''),safe=/^[\s\u0000-\u001f]*[=+@-]/.test(s)?"'"+s:s;return '"'+safe.replaceAll('"','""')+'"';};
   button('保存逐笔交易CSV','逐笔交易.csv','\ufeff'+[fields.map(csv).join(','),...study.trades.map(t=>fields.map(f=>csv(t[f])).join(','))].join('\r\n'),'text/csv;charset=utf-8');
   const table=(headers,rows)=>{const t=el('table'),head=el('tr',undefined,el('thead',undefined,t)),body=el('tbody',undefined,t);for(const h of headers)el('th',h,head);for(const row of rows){const tr=el('tr',undefined,body);for(const v of row)el('td',String(v??'—'),tr);}};
@@ -149,17 +150,17 @@ export function renderStudy(dataset,root=document.getElementById('study')){
   el('p',`¹ 只统计无歧义的已完成样本，不确定样本可能存在选择偏差。分段日期 ${study.plan.splitDate}；跨界交易单列，不把前段买入、后段卖出算作独立后段结果。未结束持仓不进入达标率分母，也不计入已完成平均收益。`);
   el('h2','抽样及数据核查');
   el('p',study.universe.note);
-  table(['代码','名称','状态','日线来源','缺失／异常日线','缺失／异常小时','一字价小时','首／末有效小时日期'],dataset.stocks.map(s=>[
-    s.code,s.name,s.error||'已读取',s.quality?.dailySource||'未记录',s.quality?.invalidDaily,s.quality?.invalidHourly,s.quality?.flatHourly,
+  table(['代码','名称','状态','日线来源','价格口径','缺失／异常日线','缺失／异常小时','一字价小时','首／末有效小时日期'],dataset.stocks.map(s=>[
+    s.code,s.name,s.error||'已读取',s.quality?.dailySource||'未记录',s.quality?.priceAdjustment==='B'?'后复权':s.quality?.priceAdjustment==='F'?'前复权':'见诊断',s.quality?.invalidDaily,s.quality?.invalidHourly,s.quality?.flatHourly,
     s.quality?`${s.quality.firstHourDate||'—'} / ${s.quality.lastHourDate||'—'}`:'—']));
   el('h2','逐股结果');
   table(['代码／名称','周期／规则','完成／不确定','严格达标率','平均盈亏¹','同期持有涨幅²'],study.results.map(r=>[
     `${r.code} ${r.name}`,`${r.mode==='short'?'短线':'中线'} · ${label(r.variant)}`,`${r.completed} / ${r.uncertain}`,pct(r.successRate),pct(r.meanReturn),pct(r.buyHoldReturn)]));
-  el('p','² 同期持有是研究首日首个有效小时开盘至末日最后有效小时收盘的前复权价格涨幅，仅作行情背景；持有时间、资金占用与单笔策略不同，不能用它与平均单笔收益直接判断谁更好。缺少期初或期末价格时不计算。');
+  el('p','² 同期持有是研究首日首个有效小时开盘至末日最后有效小时收盘，按该股票统一复权口径计算的涨幅，仅作行情背景；持有时间、资金占用与单笔策略不同，不能用它与平均单笔收益直接判断谁更好。缺少期初或期末价格时不计算。');
   el('h2','解释边界');
   for(const text of [
     'T+1、跳空越过风险线、缺失数据、同根目标与止损顺序不明均保守处理。全小时最高价等于最低价时不假定可以买卖。缺少逐笔订单、历史涨跌停及停牌状态，其他成交能力仍未被完整验证。',
-    '价格统一到同一日线前复权基准；这是价格收益近似，未逐项重建分红到账、税费和账户现金流。手续费按约定忽略。',
+    '同一股票的日线和小时线使用统一复权口径；这是价格收益近似，未逐项重建分红到账、税费和账户现金流。手续费按约定忽略。',
     '没有信号不是成功。数据读取失败的股票保留在抽样名单中，不换成另一只；失败部分的结果未知。',
     '三个版本使用同一现有交易评估器，入场均为信号后的下一小时开盘，退出规则保持一致。回调实验仅替换入场、增加市场过滤，ATR采用14日真实波幅的简单平均；没有实现完整增强方案的财务筛选、结构止损、最低盈亏比和日线EMA退出。因此不能将其结果称为完整研究方案的胜率。',
     '先检查后段表现、样本数量、数据失败及不确定交易，再讨论是否继续验证。即使某项平均盈亏为正，也需扩大样本、保留独立区间并前向模拟。'

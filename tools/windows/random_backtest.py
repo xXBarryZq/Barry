@@ -155,6 +155,7 @@ def _fetch_stock(api,stock,dates,start,end,diagnostics):
             raise ValueError('小时末价与同日日线收盘不一致（'+day+'）；需核对小时结束时间及原始/复权口径，停止该样本')
     diagnostics['dailySource']='Wind WSD日线'
     diagnostics['priceBasis']='前复权日线与原始小时的逐日因子'
+    diagnostics['priceAdjustment']='F'
     return finish_stock(stock,daily_by,found,dates,start,end,diagnostics)
 
 
@@ -173,12 +174,12 @@ def daily_from_hours(found,dates,allow_zero_volume=False):
 
 
 def adjusted_hour_history(api,stock,dates,end,diagnostics):
-    """A single front-adjusted response: never mix bases from separate windows."""
+    """A single back-adjusted response: never mix bases from separate windows."""
     begin=dates[0];cutoff=date.fromisoformat(end)+timedelta(days=1)
-    print('    读取统一前复权小时：'+begin+' 至 '+end,flush=True)
-    response=api.wsi(stock['code'],FIELDS,begin+' 09:30:00',end+' 15:00:00','BarSize=60;PriceAdj=F')
-    diagnostics['hourlyRequests'].append({'begin':begin,'end':end,'options':'BarSize=60;PriceAdj=F',**result_info(response)})
-    checked(response,'统一前复权小时 '+stock['code'])
+    print('    读取统一后复权小时：'+begin+' 至 '+end,flush=True)
+    response=api.wsi(stock['code'],FIELDS,begin+' 09:30:00',end+' 15:00:00','BarSize=60;PriceAdj=B')
+    diagnostics['hourlyRequests'].append({'begin':begin,'end':end,'options':'BarSize=60;PriceAdj=B',**result_info(response)})
+    checked(response,'统一后复权小时 '+stock['code'])
     converted=rows(response,'hourly',timestamp(datetime.combine(cutoff,time()),CHINA),CHINA)
     found={};bad_slots=set()
     counts={'parsedRows':len(converted),'outsideStudy':0,'missingAdjustment':0,'matchedSlots':0}
@@ -191,10 +192,11 @@ def adjusted_hour_history(api,stock,dates,end,diagnostics):
         bar['slot']=slot;found[(bar['date'],slot)]=bar;counts['matchedSlots']+=1
     diagnostics['conversion']=counts
     diagnostics['dailySource']='WSI四根完整60分钟合成日线'
-    diagnostics['priceBasis']='同一次Wind WSI请求 PriceAdj=F；尚未与WSD交叉核对'
+    diagnostics['priceBasis']='同一次Wind WSI请求 PriceAdj=B（后复权）；尚未与WSD交叉核对'
+    diagnostics['priceAdjustment']='B'
     if bad_slots:raise ValueError('Wind60分钟结束时刻与预设交易时段不符：'+','.join(sorted(bad_slots)))
     if not any(b.get('valid') for b in found.values()):
-        raise ValueError('统一前复权小时查询没有有效OHLCV；返回'+str(len(getattr(response,'Times',None) or []))+
+        raise ValueError('统一后复权小时查询没有有效OHLCV；返回'+str(len(getattr(response,'Times',None) or []))+
                          '行、时间校验接受'+str(len(converted))+'行。请查看接口诊断；不会使用未确认复权的原始价格代替')
     return found
 
@@ -268,7 +270,8 @@ def finish_stock(stock,daily_by,found,dates,start,end,diagnostics):
         'diagnostics':diagnostics,
         'quality':{'invalidDaily':sum(b['close'] is None or not b.get('valid',True) for b in daily),'invalidHourly':invalid,'flatHourly':flat,
                    'expectedHourly':len(hourly),'firstHourDate':valid_hours[0]['date'],'lastHourDate':valid_hours[-1]['date'],
-                   'dailySource':diagnostics.get('dailySource'),'priceBasis':diagnostics.get('priceBasis')}}
+                   'dailySource':diagnostics.get('dailySource'),'priceBasis':diagnostics.get('priceBasis'),
+                   'priceAdjustment':diagnostics.get('priceAdjustment')}}
 
 
 def save_json(path,value):

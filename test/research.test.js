@@ -24,9 +24,25 @@ test('research baseline uses the exact dashboard signal and execution functions'
     assert.deepEqual(researchSignals(item,mode,'baseline',data.benchmark.dailyBars),signals);
     const boundary={date:'9999-12-31',time:item.hourlyBars.at(-1).time+HOUR};
     const expected=evaluateTrades([...item.hourlyBars,boundary],[...signals,null],PROFILES[mode],'cn',item.calendar);
-    const actual=study.trades.filter(t=>t.mode===mode&&t.variant==='baseline').map(({code,name,mode,variant,segment,...t})=>t);
+    const actual=study.trades.filter(t=>t.mode===mode&&t.variant==='baseline').map(({code,name,mode,variant,priceAdjustment,segment,...t})=>t);
     assert.deepEqual(actual,expected.trades);
     assert.ok(expected.trades.length>0||mode==='medium');
+  }
+});
+test('uniform price rebasing preserves signals, exits and percentage results',()=>{
+  const data=fixture(),scaled=structuredClone(data),factor=3.27;
+  const scale=b=>({...b,open:b.open*factor,high:b.high*factor,low:b.low*factor,close:b.close*factor});
+  scaled.stocks[0].dailyBars=scaled.stocks[0].dailyBars.map(scale);
+  scaled.stocks[0].hourlyBars=scaled.stocks[0].hourlyBars.map(scale);
+  scaled.stocks[0].quality.priceAdjustment='B';
+  scaled.benchmark.dailyBars=scaled.benchmark.dailyBars.map(scale);
+  const before=runStudy(data),after=runStudy(scaled);
+  assert.ok(before.trades.length>0);assert.equal(after.trades.length,before.trades.length);
+  for(let i=0;i<before.trades.length;i++){
+    const a=before.trades[i],b=after.trades[i];
+    for(const key of ['entryTime','exitTime','exit','success','mode','variant'])assert.equal(b[key],a[key]);
+    for(const key of ['return','maxLoss','maxDrawdown'])assert.ok(Math.abs(a[key]-b[key])<1e-10,key);
+    assert.equal(b.priceAdjustment,'B');
   }
 });
 test('future stock and benchmark data cannot change earlier experimental signals',()=>{
