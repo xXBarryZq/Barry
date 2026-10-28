@@ -17,8 +17,10 @@ function marketGate(daily,date){
   return closes.at(-1)>mean(closes.slice(-60))&&mean(closes.slice(-20))>mean(closes.slice(-25,-5));
 }
 function dailyContext(daily,date){
-  const prior=daily.filter(b=>b.date<date).slice(-180);
-  if(prior.length<65||!prior.every(validBar))return null;
+  const window=daily.filter(b=>b.date<date).slice(-180);
+  // Match the baseline's reset at a gap, then require 65 consecutive valid days.
+  const prior=window.slice(window.findLastIndex(b=>!validBar(b))+1);
+  if(prior.length<65)return null;
   const closes=prior.map(b=>b.close),fast=researchEma(closes,20),slow=researchEma(closes,60);
   const tr=prior.slice(-14).map((b,i)=>{const prev=prior[prior.length-15+i];return Math.max(b.high-b.low,Math.abs(b.high-prev.close),Math.abs(b.low-prev.close));});
   const atr=mean(tr); // Explicit simple mean TR14, not a claim of Wilder smoothing.

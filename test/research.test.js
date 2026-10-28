@@ -57,6 +57,13 @@ test('future stock and benchmark data cannot change earlier experimental signals
     if(mode==='short')assert.ok(before.some(s=>s?.type==='buy'),'causality test must include actual candidate signals');
   }
 });
+test('pullback context recovers after 65 valid days without bridging an earlier gap',()=>{
+  const data=fixture(),item=data.stocks[0];
+  for(const b of item.dailyBars)if(b.date<=day(150))b.close=null;
+  const signals=researchSignals(item,'short','pullback',data.benchmark.dailyBars);
+  assert.ok(signals.some(s=>s?.type==='buy'));
+  assert.ok(signals.every((s,i)=>s?.type!=='buy'||item.hourlyBars[i].date>=day(216)));
+});
 test('missing market history suppresses experimental entries and is visible in results',()=>{
   const data=fixture();data.benchmark={dailyBars:[],error:'test historical entitlement unavailable'};
   const study=runStudy(data);
