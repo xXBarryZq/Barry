@@ -11,3 +11,4 @@ Wind检查结果-*.txt
 
 # Private local research data (never publish vendor exports).
 research.json
+backtests/
