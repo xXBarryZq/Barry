@@ -2,6 +2,7 @@
 import argparse
 from datetime import date, datetime, time, timedelta
 import hashlib
+import html
 import importlib
 import json
 import os
@@ -16,6 +17,27 @@ from wind_data import CHINA, cells, finite, source_date, timestamp
 
 FIELDS='open,high,low,close,volume'
 SLOTS=('10:30','11:30','14:00','15:00')
+
+
+class DataReadError(ValueError):
+    def __init__(self,message,diagnostics):
+        super().__init__(message)
+        self.diagnostics=diagnostics
+
+
+def result_info(result):
+    """Metadata and counts only; do not export full vendor history or credentials."""
+    fields=list(getattr(result,'Fields',None) or [])
+    times=list(getattr(result,'Times',None) or [])
+    data=getattr(result,'Data',None) or []
+    counts={}
+    for i,field in enumerate(fields):
+        values=data[i] if i<len(data) and data[i] is not None else []
+        name=str(field).upper()
+        counts[name]={'returned':len(values),'finiteNonnegative':sum(finite(v) is not None for v in values),
+                      'positive':sum(finite(v,positive=True) is not None for v in values)}
+    return {'errorCode':getattr(result,'ErrorCode',None),'fields':[str(f) for f in fields],
+            'rows':len(times),'firstTimes':[str(t) for t in times[:3]],'lastTimes':[str(t) for t in times[-3:]],'values':counts}
 
 
 def checked(result,stage):
@@ -62,37 +84,156 @@ def placeholder(day,slot=None):
     return {'date':day,'slot':slot,'time':timestamp(clock,CHINA),'open':None,'high':None,'low':None,'close':None,'volume':None}
 
 
-def fetch_stock(api,stock,dates,start,end):
+def fetch_stock(api,stock,dates,start,end,daily_source='auto'):
+    diagnostics={'code':stock['code'],'startDate':start,'endDate':end,'hourlyRequests':[]}
+    try:
+        if daily_source=='hourly':return fetch_hourly_stock(api,stock,dates,start,end,diagnostics)
+        return _fetch_stock(api,stock,dates,start,end,diagnostics)
+    except ValueError as error:
+        if daily_source=='auto' and diagnostics.get('dailyUnavailable'):
+            diagnostics['fallbackReason']=str(error)
+            print('    WSD日线不可用，改用同次复权小时查询合成完整日线；研究区间保持不变。',flush=True)
+            try:return fetch_hourly_stock(api,stock,dates,start,end,diagnostics)
+            except ValueError as fallback_error:raise DataReadError(str(fallback_error),diagnostics) from fallback_error
+        raise DataReadError(str(error),diagnostics) from error
+
+
+def _fetch_stock(api,stock,dates,start,end,diagnostics):
     begin=dates[0];cutoff=date.fromisoformat(end)+timedelta(days=1)
     now=timestamp(datetime.combine(cutoff,time()),CHINA)
-    adjusted=checked(api.wsd(stock['code'],FIELDS,begin,end,'PriceAdj=F'),'前复权日线 '+stock['code'])
+    adjusted=api.wsd(stock['code'],FIELDS,begin,end,'PriceAdj=F')
+    diagnostics['adjustedDaily']=result_info(adjusted)
+    checked(adjusted,'前复权日线 '+stock['code'])
     daily_by={b['date']:b for b in rows(adjusted,'daily',now,CHINA,cutoff.isoformat()) if begin<=b['date']<=end}
-    raw=checked(api.wsd(stock['code'],'close',begin,end,''),'原始收盘价 '+stock['code'])
+    diagnostics['validAdjustedDaily']=sum(bool(b.get('valid')) for b in daily_by.values())
+    if not diagnostics['validAdjustedDaily']:
+        diagnostics['dailyUnavailable']=True
+        raise ValueError('前复权日线返回'+str(diagnostics['adjustedDaily']['rows'])+'行，但没有完整有效的OHLCV；小时数据尚未查询。请查看接口诊断中的各字段有效数量')
+    raw=api.wsd(stock['code'],'close',begin,end,'')
+    diagnostics['rawDaily']=result_info(raw)
+    checked(raw,'原始收盘价 '+stock['code'])
     raw_by={source_date(v).isoformat():finite(cells(raw,i).get('CLOSE'),positive=True) for i,v in enumerate(getattr(raw,'Times',None) or [])}
     factors={day:b['close']/raw_by[day] for day,b in daily_by.items() if b['close'] and raw_by.get(day)}
+    diagnostics['matchingAdjustmentDates']=len(factors)
+    if not factors:
+        diagnostics['dailyUnavailable']=True
+        raise ValueError('日线复权匹配失败：前复权日线有效收盘'+str(sum(bool(b['close']) for b in daily_by.values()))+
+                         '条，原始日线有效收盘'+str(sum(v is not None for v in raw_by.values()))+'条，共同有效日期0个；小时数据尚未查询，不能据此判断没有小时行情权限')
     found={};bad_slots=set()
+    diagnostics['conversion']={'parsedRows':0,'outsideStudy':0,'missingAdjustment':0,'matchedSlots':0}
     chunk=date.fromisoformat(start);last=date.fromisoformat(end)
     while chunk<=last:
         chunk_end=min(last,chunk+timedelta(days=179))
         print('    读取60分钟：'+chunk.isoformat()+' 至 '+chunk_end.isoformat(),flush=True)
-        response=checked(api.wsi(stock['code'],FIELDS,chunk.isoformat()+' 09:30:00',chunk_end.isoformat()+' 15:00:00','BarSize=60'),'60分钟 '+stock['code'])
-        for bar in rows(response,'hourly',now,CHINA):
+        response=api.wsi(stock['code'],FIELDS,chunk.isoformat()+' 09:30:00',chunk_end.isoformat()+' 15:00:00','BarSize=60')
+        info=result_info(response)
+        diagnostics['hourlyRequests'].append({'begin':chunk.isoformat(),'end':chunk_end.isoformat(),**info})
+        checked(response,'60分钟 '+stock['code'])
+        converted=rows(response,'hourly',now,CHINA)
+        diagnostics['conversion']['parsedRows']+=len(converted)
+        for bar in converted:
             local=datetime.fromtimestamp(bar['time']/1000,CHINA);slot=local.strftime('%H:%M')
-            if not start<=bar['date']<=end:continue
+            if not start<=bar['date']<=end:
+                diagnostics['conversion']['outsideStudy']+=1
+                continue
             if slot not in SLOTS:bad_slots.add(slot);continue
             factor=factors.get(bar['date'])
-            if factor is None:continue
+            if factor is None:
+                diagnostics['conversion']['missingAdjustment']+=1
+                continue
             # Fetch unadjusted chunks, then use ONE daily adjustment basis for all chunks.
             for field in ('open','high','low','close'):
                 if bar[field] is not None:bar[field]*=factor
             bar['slot']=slot
             found[(bar['date'],slot)]=bar
+            diagnostics['conversion']['matchedSlots']+=1
         chunk=chunk_end+timedelta(days=1)
     if bad_slots:raise ValueError('Wind60分钟结束时刻与预设交易时段不符：'+','.join(sorted(bad_slots))+'；需确认后再回测')
     for (day,slot),bar in found.items():
         close=daily_by.get(day,{}).get('close')
         if slot=='15:00' and close and bar.get('close') and abs(bar['close']-close)>max(.02*factors[day],close*.003):
             raise ValueError('小时末价与同日日线收盘不一致（'+day+'）；需核对小时结束时间及原始/复权口径，停止该样本')
+    diagnostics['dailySource']='Wind WSD日线'
+    diagnostics['priceBasis']='前复权日线与原始小时的逐日因子'
+    return finish_stock(stock,daily_by,found,dates,start,end,diagnostics)
+
+
+def daily_from_hours(found,dates,allow_zero_volume=False):
+    """Aggregate only four complete genuine bars; missing sessions remain missing."""
+    daily={}
+    for day in dates:
+        parts=[found.get((day,slot)) for slot in SLOTS]
+        if not all(b and b.get('valid') and b['volume'] is not None and (b['volume']>=0 if allow_zero_volume else b['volume']>0) for b in parts):
+            continue
+        daily[day]={'date':day,'time':placeholder(day)['time'],'open':parts[0]['open'],
+                    'high':max(b['high'] for b in parts),'low':min(b['low'] for b in parts),
+                    'close':parts[-1]['close'],'volume':sum(b['volume'] for b in parts),
+                    'valid':True,'source':'WSI四根完整60分钟合成'}
+    return daily
+
+
+def adjusted_hour_history(api,stock,dates,end,diagnostics):
+    """A single front-adjusted response: never mix bases from separate windows."""
+    begin=dates[0];cutoff=date.fromisoformat(end)+timedelta(days=1)
+    print('    读取统一前复权小时：'+begin+' 至 '+end,flush=True)
+    response=api.wsi(stock['code'],FIELDS,begin+' 09:30:00',end+' 15:00:00','BarSize=60;PriceAdj=F')
+    diagnostics['hourlyRequests'].append({'begin':begin,'end':end,'options':'BarSize=60;PriceAdj=F',**result_info(response)})
+    checked(response,'统一前复权小时 '+stock['code'])
+    converted=rows(response,'hourly',timestamp(datetime.combine(cutoff,time()),CHINA),CHINA)
+    found={};bad_slots=set()
+    counts={'parsedRows':len(converted),'outsideStudy':0,'missingAdjustment':0,'matchedSlots':0}
+    for bar in converted:
+        if not begin<=bar['date']<=end:counts['outsideStudy']+=1;continue
+        slot=datetime.fromtimestamp(bar['time']/1000,CHINA).strftime('%H:%M')
+        if slot not in SLOTS:
+            if bar.get('valid'):bad_slots.add(slot)
+            continue
+        bar['slot']=slot;found[(bar['date'],slot)]=bar;counts['matchedSlots']+=1
+    diagnostics['conversion']=counts
+    diagnostics['dailySource']='WSI四根完整60分钟合成日线'
+    diagnostics['priceBasis']='同一次Wind WSI请求 PriceAdj=F；尚未与WSD交叉核对'
+    if bad_slots:raise ValueError('Wind60分钟结束时刻与预设交易时段不符：'+','.join(sorted(bad_slots)))
+    if not any(b.get('valid') for b in found.values()):
+        raise ValueError('统一前复权小时查询没有有效OHLCV；返回'+str(len(getattr(response,'Times',None) or []))+
+                         '行、时间校验接受'+str(len(converted))+'行。请查看接口诊断；不会使用未确认复权的原始价格代替')
+    return found
+
+
+def fetch_hourly_stock(api,stock,dates,start,end,diagnostics):
+    found=adjusted_hour_history(api,stock,dates,end,diagnostics)
+    complete=daily_from_hours(found,dates)
+    diagnostics['completeDerivedDaily']=len(complete)
+    diagnostics['warmupDerivedDaily']=sum(day<start for day in complete)
+    if not complete:raise ValueError('小时数据已返回，但没有任何交易日同时具备四根完整有效的60分钟线，不能合成日线')
+    valid_dates=sorted(day for day in complete if day>=start)
+    if not valid_dates or valid_dates[0]>(date.fromisoformat(start)+timedelta(days=30)).isoformat():
+        raise ValueError('完整小时数据未覆盖研究起点附近；不能把较短可用区间当作整个研究期，请查看接口诊断确认历史覆盖范围')
+    return finish_stock(stock,complete,found,dates,start,end,diagnostics)
+
+
+def fetch_benchmark(api,dates,end,daily_source='auto'):
+    item={'code':'000985.CSI'};diagnostics={'code':item['code'],'hourlyRequests':[]}
+    try:
+        parsed=[]
+        if daily_source!='hourly':
+            result=api.wsd(item['code'],FIELDS,dates[0],end,'PriceAdj=F')
+            diagnostics['adjustedDaily']=result_info(result)
+            checked(result,'中证全指日线')
+            parsed=rows(result,'daily',timestamp(datetime.combine(date.fromisoformat(end)+timedelta(days=1),time()),CHINA),CHINA,
+                        (date.fromisoformat(end)+timedelta(days=1)).isoformat())
+        by={b['date']:b for b in parsed if b.get('valid')}
+        diagnostics['dailySource']='Wind WSD日线'
+        if not by:
+            if daily_source=='wsd':raise ValueError('中证全指WSD日线没有完整有效数据；当前模式不使用小时合成')
+            found=adjusted_hour_history(api,item,dates,end,diagnostics)
+            by=daily_from_hours(found,dates,allow_zero_volume=True)
+            if not by:raise ValueError('中证全指没有完整日线，无法使用市场过滤；个股基础规则仍单独评估')
+        return {**item,'dailyBars':[by.get(day) or placeholder(day) for day in dates],'diagnostics':diagnostics}
+    except ValueError as error:
+        return {**item,'dailyBars':[],'error':str(error),'diagnostics':diagnostics}
+
+
+def finish_stock(stock,daily_by,found,dates,start,end,diagnostics):
     test_dates=[d for d in dates if start<=d<=end]
     hourly=[];flat=0;invalid=0
     for day in test_dates:
@@ -106,14 +247,28 @@ def fetch_stock(api,stock,dates,start,end):
             if bar['close'] is None:invalid+=1
             hourly.append(bar)
     valid_hours=[b for b in hourly if b['close'] is not None]
-    if not valid_hours:raise ValueError('没有可用的完整60分钟价格；可能为历史权限、时间口径或停牌问题')
+    diagnostics['conversion'].update({'invalidHourly':invalid,'flatHourly':flat,'validHourly':len(valid_hours),
+                                      'rawReturnedRows':sum(r['rows'] for r in diagnostics['hourlyRequests'])})
+    if not valid_hours:
+        c=diagnostics['conversion']
+        if not c['rawReturnedRows']:
+            message='Wind的60分钟请求返回0行；日线数据正常。需核对本次查询区间与WSI返回，不代表已确认没有权限'
+        elif not c['parsedRows']:
+            message='Wind已返回'+str(c['rawReturnedRows'])+'行小时记录，但时间转换接受0行；请查看接口诊断中的原始时间，不能将其当作无行情权限'
+        elif c['missingAdjustment'] and not c['matchedSlots']:
+            message='小时记录已返回，但其日期没有对应的有效日线复权因子；这是日线与小时数据日期匹配失败'
+        else:
+            message='小时记录已匹配，但OHLCV、成交量或一字价校验后没有可成交样本（异常小时'+str(invalid)+'，一字价小时'+str(flat)+'）；请查看各字段有效数量'
+        raise ValueError(message)
     early_days=[d for d in test_dates if d<= (date.fromisoformat(start)+timedelta(days=30)).isoformat()]
     if valid_hours[0]['date']>early_days[-1] and sum(bool(daily_by.get(d,{}).get('volume')) for d in early_days)>=5:
         raise ValueError('日线显示期初有交易，但小时数据未覆盖期初，疑似WSI历史被截断；不使用剩余区间冒充完整研究')
     daily=[daily_by.get(day) or placeholder(day) for day in dates]
     return {**stock,'dailyBars':daily,'hourlyBars':hourly,'calendar':test_dates,
+        'diagnostics':diagnostics,
         'quality':{'invalidDaily':sum(b['close'] is None or not b.get('valid',True) for b in daily),'invalidHourly':invalid,'flatHourly':flat,
-                   'expectedHourly':len(hourly),'firstHourDate':valid_hours[0]['date'],'lastHourDate':valid_hours[-1]['date']}}
+                   'expectedHourly':len(hourly),'firstHourDate':valid_hours[0]['date'],'lastHourDate':valid_hours[-1]['date'],
+                   'dailySource':diagnostics.get('dailySource'),'priceBasis':diagnostics.get('priceBasis')}}
 
 
 def save_json(path,value):
@@ -143,7 +298,40 @@ def report_html(dataset,repo=None):
         '\ntry{renderStudy(JSON.parse(document.getElementById("data").textContent));}catch(error){document.getElementById("study").textContent="计算失败："+error.message;throw error;}</script></html>')
 
 
-def collect(api,count,years,seed,output,today=None):
+def diagnose(api,output,today=None):
+    today=today or datetime.now(CHINA).date()
+    dates=calendar(api,(today-timedelta(days=60)).isoformat(),(today-timedelta(days=1)).isoformat())[-10:]
+    report={'schema':'barry-wind-diagnostics-v1','collectedAt':datetime.now(CHINA).isoformat(),
+            'scope':'只检查近期日线与60分钟数据转换，不是交易回测，也不能确认三年历史权限。','checks':[]}
+    for stock in [{'code':'510300.SH','name':'沪深300ETF'},{'code':'600519.SH','name':'贵州茅台'}]:
+        print('\n检查近期数据：'+stock['code'],flush=True)
+        try:
+            value=fetch_stock(api,stock,dates,dates[0],dates[-1])
+            check={**stock,'ok':True,'quality':value['quality'],'diagnostics':value['diagnostics']}
+            print('    近期日线与小时转换通过，有效小时：'+str(value['diagnostics']['conversion']['validHourly']),flush=True)
+        except DataReadError as error:
+            check={**stock,'ok':False,'error':str(error),'diagnostics':error.diagnostics}
+            print('    定位结果：'+str(error),flush=True)
+        report['checks'].append(check)
+        d=check['diagnostics']
+        for key,label in [('adjustedDaily','前复权日线'),('rawDaily','原始收盘')]:
+            if key in d:print('    '+label+'：'+json.dumps(d[key],ensure_ascii=False),flush=True)
+        for request in d['hourlyRequests']:print('    小时原始返回：'+json.dumps(request,ensure_ascii=False),flush=True)
+        if 'conversion' in d:print('    转换计数：'+json.dumps(d['conversion'],ensure_ascii=False),flush=True)
+    save_json(output/'接口诊断.json',report)
+    path=output/'接口诊断.html'
+    lines=[f"{c['code']} {c['name']}："+('近期数据转换通过' if c['ok'] else c['error']) for c in report['checks']]
+    page=('<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">'
+          '<title>Wind回测接口诊断</title><style>body{font:16px/1.7 system-ui;max-width:1100px;margin:30px auto;padding:0 20px}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f1f4f6;padding:20px}</style>'
+          '<h1>Wind回测接口诊断</h1><p>'+html.escape(report['scope'])+'</p>'+
+          ''.join('<p>'+html.escape(line)+'</p>' for line in lines)+
+          '<p>诊断已保存为同文件夹的“接口诊断.json”，只含字段、时间和计数；无需提供账号密码。</p><pre>'+html.escape(json.dumps(report,ensure_ascii=False,indent=2))+'</pre></html>')
+    path.write_text(page,encoding='utf-8')
+    print('\n接口诊断文件：'+str((output/'接口诊断.json').resolve()),flush=True)
+    return path
+
+
+def collect(api,count,years,seed,output,today=None,daily_source='auto'):
     today=today or datetime.now(CHINA).date()
     requested_end=today-timedelta(days=1) # Never use a partially completed current session.
     requested_start=requested_end-timedelta(days=365*years)
@@ -156,31 +344,37 @@ def collect(api,count,years,seed,output,today=None):
           'splitDate':study_dates[min(len(study_dates)-1,int(len(study_dates)*2/3))],
           'short':{'days':20,'target':.05,'drawdown':.10,'loss':.10},
           'medium':{'days':60,'target':.20,'drawdown':.20,'loss':.20},
-          'sample':selected,'commission':0,'ruleVersion':'price-only-exploration-v1','engineSha256':engine_hash()}
+          'sample':selected,'commission':0,'ruleVersion':'price-only-exploration-v1','engineSha256':engine_hash(),
+          'dailySourcePolicy':daily_source}
     save_json(output/'抽样计划.json',{'plan':plan,'universe':universe}) # Before any price query.
     print(f'已固定随机样本{count}只，不按收益挑选或替换。研究区间：{start} 至 {end}',flush=True)
     print('名单：'+', '.join(s['code'] for s in selected),flush=True)
-    benchmark={'code':'000985.CSI','dailyBars':[]}
-    try:
-        result=checked(api.wsd(benchmark['code'],FIELDS,dates[0],end,'PriceAdj=F'),'中证全指日线')
-        by={b['date']:b for b in rows(result,'daily',timestamp(datetime.combine(today,time()),CHINA),CHINA,today.isoformat())}
-        benchmark['dailyBars']=[by.get(day) or placeholder(day) for day in dates]
-    except ValueError as error:benchmark['error']=str(error);print('市场过滤暂不可用：'+str(error),flush=True)
+    print('\n先检查近期数据链路，检查失败时不继续批量长区间查询。',flush=True)
+    diagnose(api,output,today=today)
+    preflight=json.loads((output/'接口诊断.json').read_text(encoding='utf-8'))
+    if not any(c['ok'] for c in preflight['checks']):
+        raise DataReadError('近期数据预检未通过；已停止批量回测。请打开本次文件夹中的“接口诊断.html”查看原因',
+                            {'preflightBlocked':True,'checks':preflight['checks']})
+    benchmark=fetch_benchmark(api,dates,end,daily_source=daily_source)
+    if benchmark.get('error'):print('市场过滤暂不可用：'+benchmark['error'],flush=True)
     stocks=[]
     for i,stock in enumerate(selected):
         print(f'[{i+1}/{count}] '+stock['code']+' '+stock['name'],flush=True)
         try:
-            value=fetch_stock(api,stock,dates,start,end)
+            value=fetch_stock(api,stock,dates,start,end,daily_source=daily_source)
             print('    完成；无效小时 '+str(value['quality']['invalidHourly']),flush=True)
         except KeyboardInterrupt:
             stocks.extend({**s,'error':'用户中止，未完成读取'} for s in selected[i:])
             break
         except Exception as error:
             message=str(error) if isinstance(error,ValueError) else '接口异常类型：'+type(error).__name__
-            value={**stock,'error':message};print('    保留失败样本：'+message,flush=True)
+            value={**stock,'error':message}
+            if isinstance(error,DataReadError):value['diagnostics']=error.diagnostics
+            print('    保留失败样本：'+message,flush=True)
         stocks.append(value);save_json(output/(stock['code']+'.json'),value)
     dataset={'schema':'barry-random-study-v1','plan':plan,'universe':universe,'benchmark':benchmark,
-             'collectedAt':datetime.now(CHINA).isoformat(),'dataSource':'本机WindPy，只读WSET/TDAYS/WSD/WSI','stocks':stocks}
+             'collectedAt':datetime.now(CHINA).isoformat(),'dataSource':'本机WindPy，只读WSET/TDAYS/WSD/WSI','stocks':stocks,
+             'preflight':preflight}
     save_json(output/'回测数据.json',dataset)
     return dataset
 
@@ -192,6 +386,8 @@ def main(argv=None):
     parser.add_argument('--seed',type=int,default=20261028)
     parser.add_argument('--output',type=Path)
     parser.add_argument('--from-json',type=Path,help='从已有本地回测数据重新生成报告，不连接Wind')
+    parser.add_argument('--diagnose',action='store_true',help='只检查近期数据并保存接口诊断，不抽样或回测20只股票')
+    parser.add_argument('--daily-source',choices=('auto','wsd','hourly'),default='auto',help='日线来源；auto在WSD全空时使用同次复权小时合成')
     parser.add_argument('--no-browser',action='store_true')
     args=parser.parse_args(argv)
     if not 1<=args.count<=100 or not 1<=args.years<=10:parser.error('样本须1—100只，年数须1—10年')
@@ -207,7 +403,18 @@ def main(argv=None):
         try:
             checked(api.start(),'连接Wind')
             if not api.isconnected():raise ValueError('Wind未连接，请保持终端登录')
-            dataset=collect(api,args.count,args.years,args.seed,output)
+            if args.diagnose:
+                path=diagnose(api,output)
+                if not args.no_browser:webbrowser.open(path.resolve().as_uri())
+                return path
+            try:
+                dataset=collect(api,args.count,args.years,args.seed,output,daily_source=args.daily_source)
+            except DataReadError as error:
+                if not error.diagnostics.get('preflightBlocked'):raise
+                path=output/'接口诊断.html'
+                print('\n'+str(error)+'\n诊断路径：'+str(path.resolve()),flush=True)
+                if not args.no_browser:webbrowser.open(path.resolve().as_uri())
+                return path
         finally:api.stop()
     path=output/'报告.html';path.write_text(report_html(dataset),encoding='utf-8')
     print('\n报告已保存：'+str(path.resolve()),flush=True)

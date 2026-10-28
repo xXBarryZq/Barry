@@ -60,6 +60,13 @@ test('failed sampled stocks are retained and cannot inflate the loaded count',()
   const study=runStudy(data);
   assert.equal(study.stockCount,2);assert.equal(study.loaded,1);assert.equal(study.failures[0].code,'002466.SZ');
 });
+test('data-source diagnostics survive result export without treating failures as lost trades',()=>{
+  const data=fixture();data.stocks=[{code:'002466.SZ',name:'数据缺失测试',error:'WSD all None',diagnostics:{adjustedDaily:{rows:987,valid:0}}}];
+  const study=runStudy(data);
+  assert.equal(study.loaded,0);assert.equal(study.trades.length,0);
+  assert.equal(study.failures[0].diagnostics.adjustedDaily.rows,987);
+  assert.ok(study.summaries.every(s=>s.successRate===null&&s.meanReturn===null));
+});
 test('cross-boundary holdings are separated from later-entry results',()=>{
   const data=fixture(),first=runStudy(data).trades[0];
   assert.ok(first);

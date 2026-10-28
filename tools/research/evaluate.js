@@ -109,9 +109,9 @@ export function runStudy(dataset){
   return {schema:'barry-random-results-v1',plan:dataset.plan,universe:dataset.universe,
     scope:'仅价量与市场趋势；未验证估值、行业、盈利改善、大宗交易等完整增强理论。',
     dataSource:dataset.dataSource,rulesHash:dataset.evaluationEngineSha256||dataset.plan.engineSha256||null,
-    benchmarkError:dataset.benchmark?.error||null,stockCount:dataset.stocks.length,
+    benchmarkError:dataset.benchmark?.error||null,benchmarkDiagnostics:dataset.benchmark?.diagnostics||null,stockCount:dataset.stocks.length,
     loaded:dataset.stocks.filter(s=>!s.error).length,
-    failures:dataset.stocks.filter(s=>s.error).map(s=>({code:s.code,name:s.name,error:s.error})),
+    failures:dataset.stocks.filter(s=>s.error).map(s=>({code:s.code,name:s.name,error:s.error,diagnostics:s.diagnostics||null})),
     quality:dataset.stocks.filter(s=>!s.error).map(s=>({code:s.code,...s.quality})),
     results,summaries,trades};
 }
@@ -123,14 +123,19 @@ export function renderStudy(dataset,root=document.getElementById('study')){
   root.replaceChildren();
   el('h1','随机A股历史回测 · 初步检查');
   el('p',`固定样本 ${study.stockCount} 只；成功读取 ${study.loaded} 只。${study.plan.startDate} 至 ${study.plan.endDate}，随机种子 ${study.plan.seed}。`);
+  if(!study.loaded)el('p','全部样本未能完成数据读取，本报告没有策略盈亏结论。“保留失败样本”表示数据读取失败，不表示发生了亏损交易。请保存接口诊断以定位具体阶段。');
+  const derived=dataset.stocks.filter(s=>s.quality?.dailySource?.includes('WSI')).length;
+  if(derived)el('p',`${derived}只股票使用同次复权小时数据合成日线，每天要求四根完整有效的60分钟线。Wind WSD日线为空的具体原因尚待确认；合成日线尚未与官方日线交叉核验，结果仅作初步研究。`);
   el('p',study.scope);
   if(dataset.plan.engineSha256&&dataset.evaluationEngineSha256&&dataset.plan.engineSha256!==dataset.evaluationEngineSha256)
-    el('p','注意：本次计算规则与采集数据时的规则指纹不同，应作为新版本结果保存，不能替代原先结果。');
+    el('p','注意：本次报告/计算程序与采集时的程序指纹不同，应作为新版本结果保存，不能替代原先结果。');
   el('p','这里的“成功”是期限内可卖出时达到短线5%／中线20%，且此前两项风险均未超限。“赚钱比例”和“平均盈亏”另列。收益均基于下述撮合假设估算。平均盈亏仅统计无数据或成交歧义的已完成交易，不能当作账户收益率；若有失败或不确定样本，更不能据此证明盈利。');
   if(study.benchmarkError)el('p','市场过滤数据不可用：'+study.benchmarkError+'。两个实验版本没有买入信号不代表市场条件不满足。');
   el('p','本工具没有自动判定策略有效。一次固定抽样、近三年、未包含全部财务与交易限制，只能做初步检查。结果可能推翻某项假设，不能证明未来仍然有效。');
   const button=(label,filename,content,type)=>{const b=el('button',label);b.onclick=()=>{const url=URL.createObjectURL(new Blob([content],{type}));const a=doc.createElement('a');a.href=url;a.download=filename;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};};
   button('保存结果JSON（含逐笔交易）','回测结果.json',JSON.stringify(study,null,2),'application/json;charset=utf-8');
+  button('保存接口诊断','接口诊断.json',JSON.stringify({schema:'barry-wind-diagnostics-v1',plan:study.plan,benchmark:study.benchmarkDiagnostics,
+    checks:dataset.stocks.map(s=>({code:s.code,ok:!s.error,error:s.error||null,diagnostics:s.diagnostics||null}))},null,2),'application/json;charset=utf-8');
   const fields=['code','name','mode','variant','segment','entryDate','exitDate','entry','exitPrice','return','exit','success','maxDrawdown','maxLoss','uncertain'];
   const csv=v=>{const s=String(v??''),safe=/^[\s\u0000-\u001f]*[=+@-]/.test(s)?"'"+s:s;return '"'+safe.replaceAll('"','""')+'"';};
   button('保存逐笔交易CSV','逐笔交易.csv','\ufeff'+[fields.map(csv).join(','),...study.trades.map(t=>fields.map(f=>csv(t[f])).join(','))].join('\r\n'),'text/csv;charset=utf-8');
@@ -144,8 +149,8 @@ export function renderStudy(dataset,root=document.getElementById('study')){
   el('p',`¹ 只统计无歧义的已完成样本，不确定样本可能存在选择偏差。分段日期 ${study.plan.splitDate}；跨界交易单列，不把前段买入、后段卖出算作独立后段结果。未结束持仓不进入达标率分母，也不计入已完成平均收益。`);
   el('h2','抽样及数据核查');
   el('p',study.universe.note);
-  table(['代码','名称','状态','缺失／异常日线','缺失／异常小时','一字价小时','首／末有效小时日期'],dataset.stocks.map(s=>[
-    s.code,s.name,s.error||'已读取',s.quality?.invalidDaily,s.quality?.invalidHourly,s.quality?.flatHourly,
+  table(['代码','名称','状态','日线来源','缺失／异常日线','缺失／异常小时','一字价小时','首／末有效小时日期'],dataset.stocks.map(s=>[
+    s.code,s.name,s.error||'已读取',s.quality?.dailySource||'未记录',s.quality?.invalidDaily,s.quality?.invalidHourly,s.quality?.flatHourly,
     s.quality?`${s.quality.firstHourDate||'—'} / ${s.quality.lastHourDate||'—'}`:'—']));
   el('h2','逐股结果');
   table(['代码／名称','周期／规则','完成／不确定','严格达标率','平均盈亏¹','同期持有涨幅²'],study.results.map(r=>[
