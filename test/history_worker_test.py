@@ -103,6 +103,9 @@ class WorkerTest(unittest.TestCase):
         self.assertTrue(board.snapshot()['status']['connected']);self.assertIsNone(self.worker.poll())
         self.release.touch();result=wait_until(self.worker.poll)
         self.assertEqual(len(result['data']['series']),3);self.assertTrue(all(s['points'] for s in result['data']['series']))
+        self.worker.submit({'kind':'macro_diagnose','config':config_value({}),'begin':'2022-09-25','end':'2026-10-28'})
+        diagnosis=wait_until(self.worker.poll)['data']
+        self.assertEqual(len(diagnosis['checks']),9);self.assertEqual(diagnosis['stockQueries'],0)
 
     def test_stale_history_response_after_timezone_reset_is_discarded(self):
         board=WindDashboard(symbols=('US.AAPL',));old=board.states['US.AAPL']['historyToken'];board.set_zones({'usBarZone':'UTC'})

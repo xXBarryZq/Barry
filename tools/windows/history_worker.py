@@ -23,7 +23,10 @@ def history_loop(requests, results, api_module='WindPy'):
                     started=api.start()
                     if getattr(started,'ErrorCode',None)!=0 or not api.isconnected():
                         raise ValueError('历史数据进程未连接Wind；报价轮询继续，稍后自动重试。')
-                if job['kind']=='macro':
+                if job['kind']=='macro_diagnose':
+                    from wind_macro_check import probe_macro
+                    data=probe_macro(api,job['config'],job['begin'],job['end'])
+                elif job['kind']=='macro':
                     from wind_macro import fetch_macro
                     data=fetch_macro(api,job['config'],job['begin'],job['end'])
                 elif job['kind']=='directory':

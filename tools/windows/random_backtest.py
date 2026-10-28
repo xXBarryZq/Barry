@@ -481,7 +481,8 @@ def main(argv=None):
                     dataset['windMacroInfo']={'readAt':batch['readAt'],'collectorSha256':batch['collectorSha256'],'historicalReleaseTimesVerified':False,
                       'note':batch['note'],'series':[dict(key=s['key'],name=s['name'],unit=s['unit'],code=s['code'],
                         rows=len(s['points']),error=s.get('error'),errorCode=s.get('errorCode'),
-                        latest=s['points'][-1] if s['points'] else None,invalidRows=s.get('invalidRows',0)) for s in batch['series']]}
+                        latest=s['points'][-1] if s['points'] else None,invalidRows=s.get('invalidRows',0),
+                        diagnostics=s.get('diagnostics')) for s in batch['series']]}
                     save_json(output/'宏观接口检查.json',dataset['windMacroInfo'])
                     print('Wind宏观查询完成：有效数值'+str(sum(len(s['points']) for s in batch['series']))+
                       '条，失败指标'+str(sum(bool(s.get('error')) for s in batch['series']))+'项。',flush=True)

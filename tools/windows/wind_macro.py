@@ -52,19 +52,52 @@ def binding_hash(config):
     return hashlib.sha256(json.dumps(config['codes'],sort_keys=True).encode()).hexdigest()
 
 
-def fetch_macro(api,config,begin,end):
+def response_diagnostics(response):
+    """Bounded types/counts, not arbitrary vendor messages or complete histories."""
+    times=list(getattr(response,'Times',None) or []);data=getattr(response,'Data',None) or []
+    def sample(v):
+        if v is None:return None
+        if isinstance(v,bool):return {'type':'bool'}
+        try:
+            value=float(v)
+            if math.isfinite(value):return value
+            return {'type':'nonfinite'}
+        except (TypeError,ValueError):
+            if isinstance(v,str) and len(v)<=32 and re.fullmatch(r'[\d\s.,%+eE-]+',v):return {'numericText':v}
+            return {'type':type(v).__name__}
+    columns=[]
+    for values in data[:8]:
+        if not isinstance(values,(list,tuple)):
+            columns.append({'container':type(values).__name__});continue
+        counts={}
+        for v in values:
+            if v is None:kind='none'
+            elif isinstance(v,bool):kind='bool'
+            else:
+                try:kind='finite_numeric_text' if isinstance(v,str) and math.isfinite(float(v)) else 'finite_number' if math.isfinite(float(v)) else 'nonfinite'
+                except (TypeError,ValueError):kind='other_text' if isinstance(v,str) else 'other_type'
+            counts[kind]=counts.get(kind,0)+1
+        columns.append({'length':len(values),'types':counts,'lastSamples':[sample(v) for v in values[-3:]]})
+    return {'errorCode':getattr(response,'ErrorCode',None),'fields':[str(f)[:80] for f in (getattr(response,'Fields',None) or [])[:8]],
+      'codes':[str(c)[:32] for c in (getattr(response,'Codes',None) or [])[:8]],'rows':len(times),
+      'firstTimes':[str(t)[:40] for t in times[:2]],'lastTimes':[str(t)[:40] for t in times[-2:]],'columns':columns}
+
+
+def fetch_macro(api,config,begin,end,options=''):
     """EDB Times are observation periods; never call them publication timestamps."""
     config=config_value(config);first,last=date.fromisoformat(begin),date.fromisoformat(end)
+    if options not in ('','Fill=Previous'):raise ValueError('不支持的宏观查询选项')
     if last<first or (last-first).days>4300:raise ValueError('宏观查询日期范围无效或超过4300天')
     result={'schema':'barry-wind-macro-snapshot-v1','begin':begin,'end':end,'bindingHash':binding_hash(config),
       'collectorSha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
       'series':[],'historicalReleaseTimesVerified':False,
       'note':'普通EDB历史为当前可读版本，Times按观察期处理；未验证历史首次公布时间/版本。'}
     for key,meta in SERIES.items():
-        code=config['codes'][key];item={'key':key,'code':code,**meta,'points':[]}
+        code=config['codes'][key];item={'key':key,'code':code,**meta,'options':options,'points':[]}
         try:
             if not code:raise ValueError('未配置指标编号')
-            response=api.edb(code,begin,end,'') # No Fill=Previous, guessed metadata, or unverified options.
+            response=api.edb(code,begin,end,options) # Fill is permitted for diagnosis only; normal collectors use ''.
+            item['diagnostics']=response_diagnostics(response)
             error=getattr(response,'ErrorCode',None);item['errorCode']=error
             if error!=0:raise ValueError('Wind EDB错误码：'+str(error))
             times=list(getattr(response,'Times',None) or []);values=getattr(response,'Data',None) or []
@@ -163,6 +196,7 @@ class MacroStore:
             self.db.execute('BEGIN IMMEDIATE')
             config=config or self.config;binding=binding_hash(config)
             if batch.get('bindingHash')!=binding:raise ValueError('宏观编号配置已改变，丢弃旧查询结果')
+            if any(s.get('options','') for s in batch['series']):raise ValueError('诊断填充结果不能写入正式宏观留档')
             last=self.db.execute('SELECT MAX(seen_at) FROM observations').fetchone()[0]
             if last is not None and batch['readAt']<last:raise ValueError('电脑时钟早于已保存记录，暂停写入以免倒置可获得时间')
             for series in batch['series']:
