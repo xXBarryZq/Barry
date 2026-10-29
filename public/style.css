@@ -27,8 +27,9 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font-size: 16.5px;
+  font-size: 17px;
   line-height: 1.55;
+  font-weight: 450;
   -webkit-font-smoothing: antialiased;
 }
 button, input, select { font: inherit; }
@@ -671,7 +672,7 @@ h2 { font-size: 18px; font-weight: 560; margin: 0; letter-spacing: -.01em; }
   border: 1px solid var(--border-soft);
 }
 .tip-k {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
   color: var(--muted);
   letter-spacing: .02em;
@@ -679,7 +680,7 @@ h2 { font-size: 18px; font-weight: 560; margin: 0; letter-spacing: -.01em; }
   white-space: nowrap;
 }
 .tip-v {
-  font-size: 15px;
+  font-size: 16px;
   color: var(--text);
   line-height: 1.55;
   overflow-wrap: anywhere;
@@ -687,7 +688,7 @@ h2 { font-size: 18px; font-weight: 560; margin: 0; letter-spacing: -.01em; }
 .tip-row.tip-up .tip-v { color: var(--up); font-weight: 560; }
 .tip-row.tip-down .tip-v { color: var(--down); font-weight: 560; }
 .tip-row.tip-warn .tip-v { color: var(--warn); font-weight: 560; }
-.tip-row.tip-mute .tip-v { color: var(--muted); font-size: 14px; }
+.tip-row.tip-mute .tip-v { color: var(--muted); font-size: 15px; }
 .tip-chips {
   display: flex;
   flex-wrap: wrap;
@@ -721,8 +722,8 @@ h2 { font-size: 18px; font-weight: 560; margin: 0; letter-spacing: -.01em; }
   padding: 6px 8px;
   gap: 8px;
 }
-.signal-card .tip-k { font-size: 12px; }
-.signal-card .tip-v { font-size: 14px; line-height: 1.5; }
+.signal-card .tip-k { font-size: 13px; }
+.signal-card .tip-v { font-size: 15px; line-height: 1.55; }
 #strategy-reason { margin: 8px 0 0; }
 .strategy-box p#strategy-reason,
 .strategy-box #strategy-reason { color: var(--text); }
